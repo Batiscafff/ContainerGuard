@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}ContainerGuard — Аналіз безпеки{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>Аналіз безпеки Docker-образів</h1>
+  <p class="subtitle">Агрегований аналіз через Trivy, Grype, Syft та Hadolint</p>
+</div>
+
+<div class="card scan-form-card">
+  <form action="/scan" method="post">
+    <div class="form-group">
+      <label for="image_name">Docker образ</label>
+      <input
+        type="text"
+        id="image_name"
+        name="image_name"
+        placeholder="nginx:latest"
+        required
+        class="input"
+      />
+    </div>
+
+    <div class="form-group">
+      <label for="dockerfile_content">Dockerfile <span class="optional">(необов'язково)</span></label>
+      <textarea
+        id="dockerfile_content"
+        name="dockerfile_content"
+        rows="8"
+        placeholder="FROM ubuntu:22.04&#10;RUN apt-get update..."
+        class="textarea"
+      ></textarea>
+    </div>
+
+    <button type="submit" class="btn btn-primary btn-lg">Сканувати</button>
+  </form>
+</div>
+
+<div class="features">
+  <div class="feature">
+    <div class="feature-icon">CVE</div>
+    <h3>Trivy + Grype</h3>
+    <p>Пошук вразливостей з двох незалежних джерел і дедупликацією</p>
+  </div>
+  <div class="feature">
+    <div class="feature-icon">SBOM</div>
+    <h3>Syft</h3>
+    <p>Software Bill of Materials у форматі CycloneDX</p>
+  </div>
+  <div class="feature">
+    <div class="feature-icon">IaC</div>
+    <h3>Hadolint</h3>
+    <p>Статичний аналіз Dockerfile за best practices</p>
+  </div>
+</div>
+{% endblock %}

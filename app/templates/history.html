@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Історія сканувань{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>Історія сканувань</h2>
+  <a href="/" class="btn btn-primary">Нове сканування</a>
+</div>
+
+<div class="card">
+  {% if scans %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Образ</th>
+        <th>Статус</th>
+        <th>Score</th>
+        <th>Дата</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for scan in scans %}
+      <tr id="row-{{ scan.id }}">
+        <td class="mono">{{ scan.image_name }}</td>
+        <td><span class="badge badge-{{ scan.status }}">{{ scan.status }}</span></td>
+        <td>
+          {% if scan.security_score is not none %}
+            <span class="score score-{{ 'good' if scan.security_score >= 80 else ('mid' if scan.security_score >= 50 else 'bad') }}">
+              {{ scan.security_score }}
+            </span>
+          {% else %}—{% endif %}
+        </td>
+        <td>{{ scan.created_at.strftime("%d.%m.%Y %H:%M") }}</td>
+        <td style="display:flex;gap:0.4rem;">
+          <a href="/results/{{ scan.id }}" class="btn btn-outline btn-sm">Переглянути</a>
+          <button class="btn btn-danger btn-sm"
+                  hx-delete="/api/scan/{{ scan.id }}"
+                  hx-confirm="Видалити скан {{ scan.image_name }}?"
+                  hx-on::after-request="if(event.detail.successful) document.getElementById('row-{{ scan.id }}').remove()">
+            Видалити
+          </button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty-state">Ще немає сканувань. <a href="/">Запустити перше!</a></p>
+  {% endif %}
+</div>
+{% endblock %}

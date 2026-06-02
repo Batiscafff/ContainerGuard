@@ -1,0 +1,37 @@
+{% if components %}
+<div style="overflow-x:auto;">
+<table class="table" style="table-layout:fixed;width:100%;">
+  <colgroup>
+    <col style="width:30%;">
+    <col style="width:12%;">
+    <col style="width:10%;">
+    <col style="width:48%;">
+  </colgroup>
+  <thead>
+    <tr>
+      <th>Назва</th>
+      <th>Версія</th>
+      <th>Тип</th>
+      <th>PURL</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for c in components %}
+    <tr>
+      <td class="mono" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500;">{{ c.name }}</td>
+      <td class="mono" style="white-space:nowrap;">{{ c.version or "—" }}</td>
+      <td>
+        {% if c.type %}<span class="source-tag">{{ c.type }}</span>{% else %}—{% endif %}
+      </td>
+      <td class="mono" style="font-size:0.75rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-muted);"
+          title="{{ c.purl or '' }}">
+        {{ c.purl or "—" }}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="empty-state">SBOM порожній</p>
+{% endif %}

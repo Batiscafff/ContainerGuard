@@ -1,0 +1,212 @@
+<div class="charts-grid">
+
+  <!-- Severity distribution -->
+  <div class="chart-card">
+    <div class="chart-title">Розподіл за severity</div>
+    <div class="chart-wrap">
+      <canvas id="chartSeverity"></canvas>
+    </div>
+  </div>
+
+  <!-- Fix availability -->
+  <div class="chart-card">
+    <div class="chart-title">Скільки CVE можна виправити прямо зараз</div>
+    <div class="chart-wrap">
+      <canvas id="chartFix"></canvas>
+    </div>
+    <div id="fixSubtitle" style="text-align:center;font-size:0.78rem;color:var(--text-muted);margin-top:0.75rem;"></div>
+  </div>
+
+  <!-- Source breakdown -->
+  <div class="chart-card">
+    <div class="chart-title">Джерела виявлення</div>
+    <div class="chart-subtitle">Скільки CVE знайшов кожен сканер</div>
+    <div class="chart-wrap">
+      <canvas id="chartSources"></canvas>
+    </div>
+  </div>
+
+  <!-- Top packages — full width -->
+  <div class="chart-card chart-full">
+    <div class="chart-title">Топ пакетів за кількістю CVE</div>
+    <div class="chart-wrap chart-wrap-tall">
+      <canvas id="chartPackages"></canvas>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function() {
+  const counts      = {{ counts | tojson }};
+  const topPackages = {{ top_packages | tojson }};
+  const fixed       = {{ fixed }};
+  const unfixed     = {{ unfixed }};
+  const srcCounts   = {{ source_counts | tojson }};
+  const total       = {{ total }};
+
+  Chart.defaults.color       = '#8892a4';
+  Chart.defaults.borderColor = '#2e3350';
+  Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  Chart.defaults.font.size   = 12;
+
+  /* Plugin: малює текст точно в центрі дуги donut */
+  const donutCenterPlugin = {
+    id: 'donutCenter',
+    beforeDraw(chart) {
+      const opts = chart.options.plugins.donutCenter;
+      if (!opts || !opts.line1) return;
+      const meta = chart.getDatasetMeta(0);
+      if (!meta.data.length) return;
+      const arc = meta.data[0];
+      const cx = arc.x, cy = arc.y;
+      const { ctx } = chart;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `800 22px sans-serif`;
+      ctx.fillStyle = opts.color;
+      ctx.fillText(opts.line1, cx, cy - 9);
+      ctx.font = `11px sans-serif`;
+      ctx.fillStyle = '#8892a4';
+      ctx.fillText(opts.line2, cx, cy + 10);
+      ctx.restore();
+    }
+  };
+  Chart.register(donutCenterPlugin);
+
+  const SEV_COLORS = ['#ef4444','#f97316','#eab308','#22c55e','#64748b'];
+
+  /* 1 — Severity donut */
+  new Chart(document.getElementById('chartSeverity'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Critical','High','Medium','Low','Negligible'],
+      datasets: [{
+        data: [counts.critical, counts.high, counts.medium, counts.low, counts.negligible],
+        backgroundColor: SEV_COLORS,
+        borderWidth: 2,
+        borderColor: '#1a1d27',
+        hoverOffset: 8,
+      }]
+    },
+    options: {
+      maintainAspectRatio: false,
+      cutout: '65%',
+      plugins: {
+        legend: { position: 'right', labels: { boxWidth: 10, padding: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ${ctx.label}: ${ctx.parsed} (${((ctx.parsed/(total||1))*100).toFixed(1)}%)`,
+          }
+        },
+        donutCenter: null,
+      }
+    }
+  });
+
+  /* 2 — Fix availability donut */
+  const fixPct = total > 0 ? Math.round((fixed / total) * 100) : 0;
+  const fixColor = fixPct >= 50 ? '#22c55e' : '#ef4444';
+  document.getElementById('fixSubtitle').textContent =
+    `${fixed} із ${total} вразливостей мають доступне виправлення`;
+
+  new Chart(document.getElementById('chartFix'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Є оновлення пакета','Немає оновлення'],
+      datasets: [{
+        data: [fixed, unfixed],
+        backgroundColor: ['#22c55e','#ef4444'],
+        borderWidth: 2,
+        borderColor: '#1a1d27',
+        hoverOffset: 8,
+      }]
+    },
+    options: {
+      maintainAspectRatio: false,
+      cutout: '68%',
+      plugins: {
+        legend: { position: 'right', labels: { boxWidth: 10, padding: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ${ctx.label}: ${ctx.parsed} (${((ctx.parsed/(total||1))*100).toFixed(1)}%)`,
+          }
+        },
+        donutCenter: { line1: `${fixPct}%`, line2: 'виправлено', color: fixColor },
+      }
+    }
+  });
+
+  /* 3 — Source breakdown: двострокові мітки, без повороту */
+  const SRC_LABEL = {
+    'trivy':       ['Тільки', 'Trivy'],
+    'grype':       ['Тільки', 'Grype'],
+    'trivy+grype': ['Trivy +', 'Grype'],
+  };
+  const SRC_TOOLTIP = {
+    'trivy':       'Тільки Trivy знайшов',
+    'grype':       'Тільки Grype знайшов',
+    'trivy+grype': 'Обидва сканери знайшли',
+  };
+  const SRC_COLOR = { 'trivy': '#6366f1', 'grype': '#f97316', 'trivy+grype': '#22c55e' };
+  const srcKeys   = Object.keys(srcCounts);
+
+  new Chart(document.getElementById('chartSources'), {
+    type: 'bar',
+    data: {
+      labels: srcKeys.map(k => SRC_LABEL[k] || [k]),
+      datasets: [{
+        label: 'CVE',
+        data: srcKeys.map(k => srcCounts[k]),
+        backgroundColor: srcKeys.map(k => SRC_COLOR[k] || '#6366f1'),
+        borderRadius: 5,
+        borderSkipped: false,
+      }]
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: ctx => SRC_TOOLTIP[srcKeys[ctx[0].dataIndex]] || srcKeys[ctx[0].dataIndex],
+            label: ctx => ` ${ctx.parsed.y} CVE`,
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { maxRotation: 0, font: { size: 11 } },
+        },
+        y: { grid: { color: '#2e3350' }, ticks: { precision: 0 } },
+      }
+    }
+  });
+
+  /* 4 — Top packages horizontal bar */
+  new Chart(document.getElementById('chartPackages'), {
+    type: 'bar',
+    data: {
+      labels: topPackages.map(p => p[0]),
+      datasets: [{
+        label: 'CVE',
+        data: topPackages.map(p => p[1]),
+        backgroundColor: 'rgba(99,102,241,0.7)',
+        borderRadius: 4,
+        borderSkipped: false,
+      }]
+    },
+    options: {
+      maintainAspectRatio: false,
+      indexAxis: 'y',
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: '#2e3350' }, ticks: { precision: 0 } },
+        y: { grid: { display: false }, ticks: { font: { family: '"Fira Code", monospace', size: 11 } } },
+      }
+    }
+  });
+})();
+</script>

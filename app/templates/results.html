@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}Результати — {{ scan.image_name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.3rem;">Результати сканування</div>
+    <h2 class="image-name-heading">{{ scan.image_name }}</h2>
+  </div>
+  <div style="display:flex;gap:0.5rem;flex-shrink:0;">
+    <button class="btn btn-danger btn-sm"
+            hx-delete="/api/scan/{{ scan.id }}"
+            hx-confirm="Видалити цей скан?"
+            hx-on::after-request="if(event.detail.successful) window.location='/history'">
+      Видалити
+    </button>
+    <a href="/history" class="btn btn-outline">← Історія</a>
+  </div>
+</div>
+
+<!-- Meta row -->
+<div class="scan-meta">
+  <div class="meta-item">
+    <span class="meta-key">Статус:</span>
+    <span class="badge badge-{{ scan.status }}">{{ scan.status }}</span>
+  </div>
+  <div class="meta-item">
+    <span class="meta-key">Запущено:</span>
+    <span class="meta-val">{{ scan.created_at.strftime("%d.%m.%Y %H:%M") }}</span>
+  </div>
+  {% if scan.finished_at %}
+  <div class="meta-item">
+    <span class="meta-key">Завершено:</span>
+    <span class="meta-val">{{ scan.finished_at.strftime("%d.%m.%Y %H:%M") }}</span>
+  </div>
+  {% endif %}
+  <div class="meta-item">
+    <span class="meta-key">ID:</span>
+    <span class="meta-val mono" style="font-size:0.78rem;color:var(--text-muted);">{{ scan.id }}</span>
+  </div>
+</div>
+
+{% if scan.status in ("pending", "running") %}
+<div id="status-block"
+     hx-get="/api/scan/{{ scan.id }}/status"
+     hx-trigger="every 3s"
+     hx-swap="none">
+  <div class="card status-card">
+    <div class="spinner"></div>
+    <p style="font-size:1rem;font-weight:500;margin-top:0.25rem;">
+      {% if scan.status == "pending" %}Очікування в черзі...{% else %}Сканування виконується...{% endif %}
+    </p>
+    <p class="hint" style="margin-top:0.5rem;">Trivy · Grype · Syft запущено паралельно</p>
+  </div>
+</div>
+
+{% elif scan.status == "failed" %}
+<div class="card error-card">
+  <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.75rem;">
+    <span class="sev sev-critical">ПОМИЛКА</span>
+    <h3 style="font-size:1rem;">Сканування завершилось з помилкою</h3>
+  </div>
+  <pre>{{ scan.error_message }}</pre>
+</div>
+
+{% else %}
+<div id="results-root">
+
+  <!-- Security Score -->
+  <div id="summary-block"
+       hx-get="/hx/scan/{{ scan.id }}/summary"
+       hx-trigger="load"
+       hx-swap="outerHTML">
+    <div class="card" style="text-align:center;padding:2rem;"><div class="spinner"></div></div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="result-tabs">
+    <button class="tab-btn active" onclick="showTab('vulns', this)">
+      Вразливості
+    </button>
+    <button class="tab-btn" onclick="showTab('sbom', this)">
+      SBOM
+    </button>
+    <button class="tab-btn" onclick="showTab('dockerfile', this)">
+      Dockerfile Issues
+    </button>
+    <button class="tab-btn"
+            onclick="showTab('analytics', this)"
+            hx-get="/hx/scan/{{ scan.id }}/charts"
+            hx-target="#charts-container"
+            hx-trigger="click once">
+      Аналітика
+    </button>
+  </div>
+
+  <!-- Vulnerabilities tab -->
+  <div id="tab-vulns" class="tab-panel active">
+    <div class="card">
+      <div class="card-header">
+        <h3 id="vuln-heading">Вразливості</h3>
+        <div class="filters">
+          <select id="sev-filter"
+                  hx-get="/hx/scan/{{ scan.id }}/vulnerabilities"
+                  hx-target="#vuln-table"
+                  hx-trigger="change"
+                  hx-include="#src-filter"
+                  name="severity"
+                  class="select">
+            <option value="">Всі severity</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+            <option value="negligible">Negligible</option>
+          </select>
+
+          <select id="src-filter"
+                  hx-get="/hx/scan/{{ scan.id }}/vulnerabilities"
+                  hx-target="#vuln-table"
+                  hx-trigger="change"
+                  hx-include="#sev-filter"
+                  name="source"
+                  class="select">
+            <option value="">Всі джерела</option>
+            <option value="trivy">Trivy</option>
+            <option value="grype">Grype</option>
+            <option value="trivy+grype">Trivy+Grype</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="vuln-table"
+           hx-get="/hx/scan/{{ scan.id }}/vulnerabilities"
+           hx-trigger="load">
+        <div class="spinner"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SBOM tab -->
+  <div id="tab-sbom" class="tab-panel">
+    <div class="card">
+      <div class="card-header">
+        <h3>SBOM <span id="sbom-count" class="count-badge"></span></h3>
+        <a href="/api/scan/{{ scan.id }}/sbom/download" class="btn btn-outline btn-sm">↓ CycloneDX JSON</a>
+      </div>
+      <div id="sbom-table"
+           hx-get="/hx/scan/{{ scan.id }}/sbom"
+           hx-trigger="load">
+        <div class="spinner"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dockerfile tab -->
+  <div id="tab-dockerfile" class="tab-panel">
+    <div class="card">
+      <div class="card-header">
+        <h3>Dockerfile Issues</h3>
+      </div>
+      <div id="dockerfile-table"
+           hx-get="/hx/scan/{{ scan.id }}/dockerfile"
+           hx-trigger="load">
+        <div class="spinner"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Analytics tab — loaded lazily on first click -->
+  <div id="tab-analytics" class="tab-panel">
+    <div id="charts-container">
+      <div class="card" style="text-align:center;padding:2rem;color:var(--text-muted);font-size:0.9rem;">
+        Натисніть таб, щоб завантажити графіки
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endif %}
+
+<script src="/static/js/chart.umd.min.js"></script>
+<script>
+  /* polling — reload when scan completes */
+  document.body.addEventListener("htmx:afterRequest", function(evt) {
+    if (evt.detail.elt.id === "status-block") {
+      try {
+        const data = JSON.parse(evt.detail.xhr.responseText);
+        if (data.status === "completed" || data.status === "failed") {
+          window.location.reload();
+        }
+      } catch(e) {}
+    }
+  });
+
+  /* update vuln count badge after table loads */
+  document.body.addEventListener("htmx:afterSettle", function(evt) {
+    if (evt.detail.elt.id === "vuln-table") {
+      const rows = evt.detail.elt.querySelectorAll("tbody tr").length;
+      const h = document.getElementById("vuln-heading");
+      if (h && rows > 0) {
+        let badge = h.querySelector(".count-badge");
+        if (!badge) { badge = document.createElement("span"); badge.className = "count-badge"; h.appendChild(badge); }
+        badge.textContent = rows;
+      }
+    }
+    if (evt.detail.elt.id === "sbom-table") {
+      const rows = evt.detail.elt.querySelectorAll("tbody tr").length;
+      const badge = document.getElementById("sbom-count");
+      if (badge && rows > 0) badge.textContent = rows;
+    }
+  });
+
+  /* tab switching */
+  function showTab(name, btn) {
+    document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    document.getElementById("tab-" + name).classList.add("active");
+    btn.classList.add("active");
+  }
+</script>
+{% endblock %}

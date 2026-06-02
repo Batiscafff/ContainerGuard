@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}ContainerGuard{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <script src="/static/js/htmx.min.js"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <a class="brand" href="/">ContainerGuard</a>
+    <div class="nav-links">
+      <a href="/">Сканування</a>
+      <a href="/history">Історія</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

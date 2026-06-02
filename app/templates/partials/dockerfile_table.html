@@ -1,0 +1,24 @@
+{% if issues %}
+<table class="table">
+  <thead>
+    <tr>
+      <th>Рядок</th>
+      <th>Правило</th>
+      <th>Severity</th>
+      <th>Повідомлення</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for i in issues %}
+    <tr>
+      <td>{{ i.line or "—" }}</td>
+      <td class="mono">{{ i.rule }}</td>
+      <td><span class="sev sev-{{ i.severity }}">{{ i.severity }}</span></td>
+      <td>{{ i.message }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-state">Проблем Dockerfile не знайдено</p>
+{% endif %}

@@ -1,0 +1,46 @@
+{% if vulns %}
+<div style="overflow-x:auto;">
+<table class="table">
+  <thead>
+    <tr>
+      <th>CVE</th>
+      <th>Пакет</th>
+      <th>Встановлена</th>
+      <th>Виправлена</th>
+      <th>Опис</th>
+      <th>Severity</th>
+      <th>Джерело</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for v in vulns %}
+    <tr>
+      <td style="white-space:nowrap;">
+        {% if v.url %}
+          <a class="cve-link" href="{{ v.url }}" target="_blank" rel="noopener">{{ v.cve_id }}</a>
+        {% else %}
+          <span class="mono">{{ v.cve_id }}</span>
+        {% endif %}
+      </td>
+      <td class="mono">{{ v.package_name }}</td>
+      <td class="mono" style="white-space:nowrap;">{{ v.installed_ver or "—" }}</td>
+      <td class="mono" style="white-space:nowrap;color:{% if v.fixed_ver %}var(--low){% else %}var(--text-muted){% endif %};">
+        {{ v.fixed_ver or "—" }}
+      </td>
+      <td>
+        {% if v.title %}
+          <span class="vuln-title" title="{{ v.title }}">{{ v.title }}</span>
+        {% else %}
+          <span style="color:var(--text-muted);">—</span>
+        {% endif %}
+      </td>
+      <td><span class="sev sev-{{ v.severity }}">{{ v.severity }}</span></td>
+      <td><span class="source-tag">{{ v.source }}</span></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="empty-state">Вразливостей не знайдено</p>
+{% endif %}
