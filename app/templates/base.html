@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}ContainerGuard{% endblock %}</title>
-  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/style.css?v=2" />
   <script src="/static/js/htmx.min.js"></script>
 </head>
 <body>
@@ -14,6 +14,9 @@
     <div class="nav-links">
       <a href="/">Сканування</a>
       <a href="/history">Історія</a>
+      {% if request.session.get("is_admin") %}
+      <a href="/admin/users" class="nav-admin">Адмін</a>
+      {% endif %}
       <a href="/profile">Профіль</a>
       <form method="post" action="/logout" style="display:inline;">
         <button type="submit" class="nav-logout">Вийти</button>

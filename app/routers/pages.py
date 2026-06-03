@@ -5,8 +5,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import require_session
+from app.dependencies import require_active
 from app.models.scan import Scan
+from app.models.user import User
 from app.services.scan_service import create_scan
 
 router = APIRouter()
@@ -14,7 +15,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, _: str = Depends(require_session)):
+async def index(request: Request, _: User = Depends(require_active)):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
@@ -25,7 +26,7 @@ async def start_scan(
     image_name: str = Form(default=""),
     dockerfile_content: str = Form(default=""),
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(require_session),
+    _: User = Depends(require_active),
 ):
     mode = scan_mode if scan_mode in ("image", "dockerfile") else "image"
     content = dockerfile_content.strip() or None
@@ -48,7 +49,7 @@ async def results(
     request: Request,
     scan_id: str,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(require_session),
+    _: User = Depends(require_active),
 ):
     scan = await db.get(Scan, scan_id)
     if not scan:
@@ -60,7 +61,7 @@ async def results(
 async def history(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(require_session),
+    _: User = Depends(require_active),
 ):
     result = await db.execute(
         select(Scan).order_by(Scan.created_at.desc()).limit(50)

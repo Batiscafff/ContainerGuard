@@ -9,6 +9,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.config import settings
 from app.database import async_session_factory
 from app.models.user import User
+from app.routers.admin import router as admin_router
 from app.routers.api import router as api_router
 from app.routers.auth import pwd_context
 from app.routers.auth import router as auth_router
@@ -25,6 +26,8 @@ async def _seed_admin():
                 email=settings.admin_email,
                 hashed_password=pwd_context.hash(password),
                 api_key=secrets.token_hex(32),
+                is_active=True,
+                is_admin=True,
             )
             db.add(user)
             await db.commit()
@@ -47,6 +50,7 @@ app.add_middleware(SessionMiddleware, secret_key=settings.app_secret_key)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(pages_router)
 app.include_router(hx_router)
 app.include_router(api_router)

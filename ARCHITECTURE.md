@@ -96,16 +96,17 @@ ContainerGuard/
 │   │   ├── sbom.py             # SbomComponent
 │   │   ├── dockerfile_issue.py # DockerfileIssue
 │   │   ├── secret.py           # Secret (TruffleHog)
-│   │   └── user.py             # User (email, hashed_password, api_key)
+│   │   └── user.py             # User (email, hashed_password, api_key, is_active, is_admin)
 │   │
 │   ├── schemas/
 │   │   ├── scan.py             # ScanStatus (включає progress, stage, scan_mode)
 │   │   └── vulnerability.py
 │   │
-│   ├── dependencies.py         # require_session(), require_auth()
+│   ├── dependencies.py         # get_current_user(), require_active(), require_admin(), require_auth()
 │   │
 │   ├── routers/
-│   │   ├── auth.py             # GET/POST /login, POST /logout, GET/POST /profile
+│   │   ├── auth.py             # /login, /logout, /register, /pending, /profile
+│   │   ├── admin.py            # /admin/users — керування користувачами
 │   │   ├── pages.py            # HTML-сторінки (GET /, POST /scan, GET /results, /history)
 │   │   ├── api.py              # JSON API (POST /api/scan, GET /api/scan/{id}/*)
 │   │   └── hx.py               # HTML-фрагменти для htmx (/hx/scan/{id}/*)
@@ -117,7 +118,10 @@ ContainerGuard/
 │   ├── templates/
 │   │   ├── base.html
 │   │   ├── login.html          # сторінка входу
+│   │   ├── register.html       # реєстрація нового користувача
+│   │   ├── pending.html        # очікування активації адміном
 │   │   ├── profile.html        # профіль + API-ключ
+│   │   ├── admin_users.html    # адмін-консоль: список користувачів
 │   │   ├── index.html          # перемикач режимів Образ / Dockerfile
 │   │   ├── results.html        # умовний рендер під scan_mode
 │   │   ├── history.html
@@ -155,7 +159,8 @@ ContainerGuard/
 │       ├── 0003_add_secret_raw_value.py
 │       ├── 0004_add_scan_progress.py # колонки progress, stage
 │       ├── 0005_add_scan_mode.py     # колонка scan_mode
-│       └── 0006_add_users.py         # таблиця users
+│       ├── 0006_add_users.py         # таблиця users
+│       └── 0007_add_user_roles.py    # колонки is_active, is_admin
 │
 └── requirements.txt
 ```
@@ -238,6 +243,8 @@ id              VARCHAR(36)  PK
 email           VARCHAR(255) UNIQUE NOT NULL
 hashed_password VARCHAR(255) NOT NULL  (bcrypt)
 api_key         VARCHAR(64)  UNIQUE NOT NULL
+is_active       BOOL         DEFAULT false  (доступ до сканера)
+is_admin        BOOL         DEFAULT false  (доступ до /admin/*)
 created_at      TIMESTAMP    DEFAULT now()
 ```
 
@@ -255,11 +262,23 @@ CREATE TYPE issue_severity AS ENUM ('error','warning','info');
 
 ## 5. Автентифікація та авторизація
 
-Система має одного адміністратора. Реалізовано два паралельних механізми захисту.
+### Ролі користувачів
 
-### Ініціалізація адміна
+| Поле | Значення | Доступ |
+|------|----------|--------|
+| `is_active=false, is_admin=false` | Новий / заблокований | Тільки `/login`, `/register`, `/pending`, `/profile` |
+| `is_active=true, is_admin=false` | Звичайний користувач | Сканер, API |
+| `is_active=true, is_admin=true` | Адміністратор | Сканер, API + `/admin/*` |
 
-При першому старті `app` перевіряє таблицю `users` — якщо вона порожня, автоматично створює адміна:
+### Реєстрація та активація
+
+Будь-хто може зареєструватись через `/register`. Новий акаунт створюється з `is_active=false` — доступу до сканера немає. Після входу користувач бачить сторінку `/pending` з повідомленням про очікування.
+
+Адмін активує акаунт через консоль `/admin/users`.
+
+### Ініціалізація першого адміна
+
+При першому старті (порожня таблиця `users`) автоматично створюється адмін з `is_active=true, is_admin=true`:
 
 ```python
 # app/main.py — lifespan
@@ -268,53 +287,69 @@ user = User(
     email=settings.admin_email,
     hashed_password=pwd_context.hash(password),  # bcrypt
     api_key=secrets.token_hex(32),
+    is_active=True,
+    is_admin=True,
 )
 ```
 
-Згенерований пароль виводиться в stdout (видно через `docker compose logs app`) і більше ніде не зберігається у відкритому вигляді.
+Пароль виводиться в stdout (`docker compose logs app`) і більше ніде не зберігається у відкритому вигляді.
 
 ### Сесійна авторизація (веб-інтерфейс)
 
-Використовує `starlette.middleware.sessions.SessionMiddleware` — підписаний cookie на базі `itsdangerous`. Session зберігає `user_id` і `user_email`.
+Використовує `starlette.middleware.sessions.SessionMiddleware` — підписаний cookie на базі `itsdangerous`. Session зберігає `user_id`, `user_email`, `is_admin`.
 
 ```
-GET  /login  → форма входу
-POST /login  → перевірка bcrypt → set session cookie → redirect /
-POST /logout → session.clear() → redirect /login
+GET  /register → форма реєстрації
+POST /register → створити User(is_active=false) → redirect /pending
+GET  /login    → форма входу
+POST /login    → перевірка bcrypt → set session → redirect / або /pending
+POST /logout   → session.clear() → redirect /login
+GET  /pending  → сторінка очікування для неактивних
 ```
 
-Dependency `require_session(request)` перевіряє `request.session["user_id"]` і повертає `307 → /login` якщо сесії немає. Застосовується до всіх HTML-роутів (`pages.py`) та htmx-фрагментів (`hx.py`).
+### Dependency-ланцюг
+
+```
+get_current_user()   → будь-який залогінений (DB lookup по user_id із сесії)
+    │
+    ├── require_active()  → is_active=true  → інакше 307 /pending
+    │       └── використовується в pages.py, hx.py
+    │
+    └── require_admin()   → is_admin=true   → інакше 403
+            └── використовується в admin.py
+```
 
 ### API-ключ (JSON API)
 
-Кожен користувач має персональний API-ключ (`api_key` у таблиці `users`). Ключ доступний на сторінці `/profile` і може бути перегенерований.
-
-Dependency `require_auth(request, x_api_key)` приймає **обидва** методи:
+Кожен користувач має персональний API-ключ. Ключ видно на сторінці `/profile`, може бути перегенерований. `require_auth` приймає обидва методи і перевіряє `is_active`:
 
 ```
-1. Session cookie  → браузер надсилає автоматично (htmx, результати сканування)
-2. X-API-Key header → зовнішні API-клієнти (curl, скрипти)
+Session cookie  → браузер надсилає автоматично (htmx-запити)
+X-API-Key header → зовнішні клієнти (curl, скрипти)
 ```
 
-Якщо ні сесії, ні ключа — повертає `401 Authentication required`.
+### Адмін-консоль (`/admin/users`)
 
-```bash
-curl -X POST http://localhost:8000/api/scan \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: <ключ зі сторінки /profile>" \
-  -d '{"image_name": "nginx:latest"}'
-```
+| Дія | Ендпоінт |
+|-----|----------|
+| Переглянути всіх користувачів | `GET /admin/users` |
+| Активувати | `POST /admin/users/{id}/activate` |
+| Деактивувати | `POST /admin/users/{id}/deactivate` |
+| Призначити адміном | `POST /admin/users/{id}/promote` |
+| Зняти права адміна | `POST /admin/users/{id}/demote` |
+| Видалити | `POST /admin/users/{id}/delete` |
 
-Застосовується до всього `/api/`-роутера через `APIRouter(dependencies=[Depends(require_auth)])`.
+Адмін не може деактивувати, понизити або видалити сам себе.
 
 ### Таблиця захисту роутів
 
-| Роутер | Захист | Метод |
-|--------|--------|-------|
-| `pages.py` | `require_session` | Session cookie → redirect /login |
-| `hx.py` | `require_session` | Session cookie → 307 |
-| `api.py` | `require_auth` | Session cookie АБО X-API-Key → 401 |
-| `/login`, `/static/*` | Без захисту | — |
+| Роутер | Захист | Поведінка при відмові |
+|--------|--------|-----------------------|
+| `pages.py` | `require_active` | → 307 /login або /pending |
+| `hx.py` | `require_active` | → 307 /pending |
+| `admin.py` | `require_admin` | → 403 |
+| `api.py` | `require_auth` | → 401 або 403 |
+| `/login`, `/register`, `/pending`, `/static/*` | Без захисту | — |
 
 ---
 

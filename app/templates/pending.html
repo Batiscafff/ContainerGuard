@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Очікування — ContainerGuard{% endblock %}
+
+{% block content %}
+<div style="max-width:480px; margin:4rem auto; text-align:center;">
+  <div class="card" style="padding:2.5rem;">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none"
+         stroke="var(--text-muted)" stroke-width="1.5" style="margin-bottom:1rem;">
+      <circle cx="12" cy="12" r="10"/>
+      <polyline points="12 6 12 12 16 14"/>
+    </svg>
+    <h2 style="margin-bottom:0.75rem;">Обліковий запис очікує підтвердження</h2>
+    <p style="color:var(--text-muted); font-size:0.9rem; line-height:1.6;">
+      Ваш акаунт <strong>{{ request.session.get("user_email", "") }}</strong>
+      зареєстровано, але ще не активовано адміністратором.<br><br>
+      Доступ до сканера буде надано після підтвердження.
+    </p>
+    <form method="post" action="/logout" style="margin-top:1.5rem;">
+      <button type="submit" class="btn" style="background:var(--surface2); border:1px solid var(--border);">
+        Вийти
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}
