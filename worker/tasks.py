@@ -174,6 +174,66 @@ def _calculate_score(vulns: list[dict]) -> int:
     return max(0, round(100 - 30 * math.log10(1 + penalty)))
 
 
+_CACHE_TTL_DAYS = 7
+
+
+def _get_image_digest(image_name: str) -> str | None:
+    result = subprocess.run(
+        ["docker", "inspect", image_name, "--format", "{{.Id}}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return None
+
+
+def _update_image_digest(scan_id: str, digest: str):
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE scans SET image_digest=%s WHERE id=%s", (digest, scan_id))
+        conn.commit()
+
+
+def _find_cached_scan(current_scan_id: str, digest: str) -> tuple[str, int] | None:
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT id, security_score FROM scans
+               WHERE image_digest = %s
+                 AND status = 'completed'
+                 AND id != %s
+                 AND created_at > NOW() - INTERVAL '%s days'
+               ORDER BY created_at DESC
+               LIMIT 1""",
+            (digest, current_scan_id, _CACHE_TTL_DAYS),
+        )
+        row = cur.fetchone()
+        return (row[0], row[1]) if row else None
+
+
+def _copy_scan_results(from_scan_id: str, to_scan_id: str):
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO vulnerabilities
+                   (id, scan_id, cve_id, package_name, installed_ver, fixed_ver, severity, source, title, url)
+               SELECT gen_random_uuid(), %s, cve_id, package_name, installed_ver, fixed_ver, severity, source, title, url
+               FROM vulnerabilities WHERE scan_id = %s""",
+            (to_scan_id, from_scan_id),
+        )
+        cur.execute(
+            """INSERT INTO sbom_components (id, scan_id, name, version, type, purl)
+               SELECT gen_random_uuid(), %s, name, version, type, purl
+               FROM sbom_components WHERE scan_id = %s""",
+            (to_scan_id, from_scan_id),
+        )
+        cur.execute(
+            """INSERT INTO secrets
+                   (id, scan_id, detector_name, verified, raw_redacted, raw_value, file_path, layer, line, decoder_name)
+               SELECT gen_random_uuid(), %s, detector_name, verified, raw_redacted, raw_value, file_path, layer, line, decoder_name
+               FROM secrets WHERE scan_id = %s""",
+            (to_scan_id, from_scan_id),
+        )
+        conn.commit()
+
+
 def _check_image_exists(image_name: str) -> None:
     result = subprocess.run(
         ["docker", "pull", image_name],
@@ -227,6 +287,18 @@ def scan_image_task(
 
     try:
         _check_image_exists(image_name)
+
+        digest = _get_image_digest(image_name)
+        if digest:
+            _update_image_digest(scan_id, digest)
+            cached = _find_cached_scan(scan_id, digest)
+            if cached:
+                cached_id, cached_score = cached
+                _update_progress(scan_id, 50, "Завантаження з кешу...")
+                _copy_scan_results(cached_id, scan_id)
+                _update_status(scan_id, "completed", score=cached_score)
+                return
+
         _update_progress(scan_id, 10, "Запуск сканерів")
 
         progress_lock = threading.Lock()

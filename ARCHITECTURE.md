@@ -91,7 +91,7 @@ ContainerGuard/
 │   ├── database.py             # async SQLAlchemy engine + session
 │   │
 │   ├── models/
-│   │   ├── scan.py             # Scan (status, scan_mode, progress, stage, security_score)
+│   │   ├── scan.py             # Scan (status, scan_mode, progress, stage, security_score, image_digest)
 │   │   ├── vulnerability.py    # Vulnerability
 │   │   ├── sbom.py             # SbomComponent
 │   │   ├── dockerfile_issue.py # DockerfileIssue
@@ -160,7 +160,8 @@ ContainerGuard/
 │       ├── 0004_add_scan_progress.py # колонки progress, stage
 │       ├── 0005_add_scan_mode.py     # колонка scan_mode
 │       ├── 0006_add_users.py         # таблиця users
-│       └── 0007_add_user_roles.py    # колонки is_active, is_admin
+│       ├── 0007_add_user_roles.py    # колонки is_active, is_admin
+│       └── 0008_add_image_digest.py  # колонка image_digest + індекс
 │
 └── requirements.txt
 ```
@@ -215,6 +216,8 @@ stage          VARCHAR(120) текст поточного етапу, NULL
 created_at     TIMESTAMP    DEFAULT now()
 finished_at    TIMESTAMP    NULL
 error_message  TEXT         NULL
+image_digest   VARCHAR(100) SHA256-digest образу, NULL (тільки режим image)
+                            INDEX ix_scans_image_digest — для швидкого пошуку кешу
 
     │ 1
     │
@@ -453,6 +456,19 @@ def scan_image_task(self, scan_id, image_name,
     _update_status(scan_id, "running")
     _update_progress(scan_id, 5, "Перевірка образу...")
     _check_image_exists(image_name)           # docker pull — fail-fast
+
+    # Кеш за digest: якщо той самий образ сканувався < 7 днів тому —
+    # копіюємо результати і завершуємо без запуску сканерів
+    digest = _get_image_digest(image_name)    # docker inspect → sha256:...
+    if digest:
+        _update_image_digest(scan_id, digest)
+        cached = _find_cached_scan(scan_id, digest)
+        if cached:
+            cached_id, cached_score = cached
+            _copy_scan_results(cached_id, scan_id)
+            _update_status(scan_id, "completed", score=cached_score)
+            return                            # ← сканери не запускаються
+
     _update_progress(scan_id, 10, "Запуск сканерів")
 
     # Паралельний запуск 4 сканерів
@@ -479,6 +495,17 @@ def scan_image_task(self, scan_id, image_name,
     # ... save to DB ...
     _update_status(scan_id, "completed", score=score)
 ```
+
+### Кешування (режим «Образ»)
+
+| Функція | Дія |
+|---------|-----|
+| `_get_image_digest(image)` | `docker inspect --format {{.Id}}` → `sha256:abc…` |
+| `_update_image_digest(scan_id, digest)` | Зберігає digest у `scans.image_digest` |
+| `_find_cached_scan(scan_id, digest)` | `SELECT id, security_score FROM scans WHERE image_digest=… AND status='completed' AND created_at > NOW()-7d` |
+| `_copy_scan_results(from_id, to_id)` | `INSERT INTO vulnerabilities/sbom_components/secrets … SELECT … FROM … WHERE scan_id=from_id` |
+
+Digest прив'язаний до **вмісту** образу, а не до тегу: `nginx:latest` після оновлення на Docker Hub отримає новий digest і кеш не спрацює.
 
 ### Прогрес (режим «Образ»)
 
@@ -564,16 +591,20 @@ POST /scan або POST /api/scan
 Celery Worker:
   status=running, progress=5
   docker pull → progress=10
-  ThreadPoolExecutor(4):
-    TrivyScanner   → done → progress=27
-    GrypeScanner   → done → progress=44
-    SyftScanner    → done → progress=61
-    TruffleHogScanner → done → progress=78
-  [HadolintScanner якщо є Dockerfile] → progress=85
-  merge_vulnerabilities() (dedup Trivy+Grype)
-  calculate_score()
-  save → progress=92
-  status=completed, security_score=N
+  docker inspect → digest sha256:…
+  ┌─ digest знайдено в кеші (< 7 днів)?
+  │   YES → copy vulnerabilities/sbom/secrets → status=completed ✓
+  │   NO  → зберегти digest, запустити сканери
+  └─ ThreadPoolExecutor(4):
+       TrivyScanner   → done → progress=27
+       GrypeScanner   → done → progress=44
+       SyftScanner    → done → progress=61
+       TruffleHogScanner → done → progress=78
+     [HadolintScanner якщо є Dockerfile] → progress=85
+     merge_vulnerabilities() (dedup Trivy+Grype)
+     calculate_score()
+     save → progress=92
+     status=completed, security_score=N
 
 Browser (htmx polling /api/scan/{id}/status кожні 3с):
   → оновлює progress bar

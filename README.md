@@ -24,6 +24,8 @@ ContainerGuard підтримує два режими сканування:
 
 Результати Trivy і Grype **дедуплікуються** — якщо обидва знайшли одну CVE, вона зберігається один раз із позначкою `trivy+grype`. На основі знайдених вразливостей розраховується **Security Score** від 0 до 100.
 
+Система підтримує **кешування за digest образу**: якщо той самий образ (за SHA256-digest) вже сканувався протягом останніх 7 днів, результати копіюються миттєво без повторного запуску сканерів.
+
 ### Режим «Dockerfile»
 
 Тільки статичний аналіз Dockerfile через Hadolint — без завантаження образу. Зручно для перевірки Dockerfile на ранніх етапах розробки. Розраховується **Dockerfile Score** на основі знайдених порушень.
@@ -174,7 +176,7 @@ ContainerGuard/
 │   ├── config.py
 │   ├── database.py
 │   ├── models/
-│   │   ├── scan.py             # поля: status, scan_mode, progress, stage, security_score
+│   │   ├── scan.py             # поля: status, scan_mode, progress, stage, security_score, image_digest
 │   │   ├── vulnerability.py
 │   │   ├── sbom.py
 │   │   ├── dockerfile_issue.py
@@ -226,7 +228,10 @@ ContainerGuard/
 │       ├── 0002_add_secrets.py
 │       ├── 0003_add_secret_raw_value.py
 │       ├── 0004_add_scan_progress.py
-│       └── 0005_add_scan_mode.py
+│       ├── 0005_add_scan_mode.py
+│       ├── 0006_add_users.py
+│       ├── 0007_add_user_roles.py
+│       └── 0008_add_image_digest.py
 │
 ├── docker-compose.yml
 ├── Dockerfile
