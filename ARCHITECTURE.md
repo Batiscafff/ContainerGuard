@@ -17,7 +17,7 @@
 8. [Frontend (Jinja2 + htmx)](#8-frontend-jinja2--htmx)
 9. [Docker Compose](#9-docker-compose)
 10. [Потік даних](#10-потік-даних)
-11. [Security Score — алгоритм](#11-security-score--алгоритм)
+11. [Алгоритми оцінювання](#11-алгоритми-оцінювання)
 12. [Змінні середовища](#12-змінні-середовища)
 
 ---
@@ -32,37 +32,43 @@
                         │ HTTP
 ┌───────────────────────▼─────────────────────────────────┐
 │                   FastAPI (port 8000)                    │
-│   /               – головна сторінка                    │
-│   /scan           – запуск сканування                   │
+│   /               – головна сторінка (вибір режиму)     │
+│   /scan           – запуск сканування (форма)           │
 │   /results/{id}   – сторінка результатів                │
 │   /history        – історія сканувань                   │
-│   /api/...        – JSON API для htmx-поллінгу          │
+│   /api/scan       – POST: запустити скан (JSON API)     │
+│   /api/scan/{id}  – GET: статус, результати, звіти      │
+│   /hx/scan/{id}   – GET: HTML-фрагменти для htmx        │
 └──────────┬───────────────────────┬──────────────────────┘
-           │ SQLAlchemy (async)    │ Celery task
+           │ SQLAlchemy (async)    │ Celery send_task
 ┌──────────▼──────────┐  ┌────────▼──────────────────────┐
 │    PostgreSQL        │  │        Redis (broker)         │
 │                      │  │        Redis (backend)        │
 │  scans               │  └────────┬──────────────────────┘
-│  vulnerabilities     │           │ worker.py
+│  vulnerabilities     │           │ Celery worker
 │  sbom_components     │  ┌────────▼──────────────────────┐
 │  dockerfile_issues   │  │      Celery Worker             │
-└──────────▲──────────┘  │                               │
-           │ write        │  ┌──────────────────────────┐ │
-           └──────────────┤  │   Scanner Orchestrator   │ │
-                          │  │                          │ │
-                          │  │  run_trivy()             │ │
-                          │  │  run_grype()             │ │
-                          │  │  run_syft()              │ │
-                          │  │  run_hadolint()          │ │
-                          │  └──────────┬───────────────┘ │
-                          └─────────────┼─────────────────┘
+│  secrets             │  │                               │
+└──────────▲──────────┘  │  scan_mode == "image":        │
+           │ psycopg2     │  ┌────────────────────────┐   │
+           └──────────────┤  │  ThreadPoolExecutor    │   │
+                          │  │  ├─ TrivyScanner        │   │
+                          │  │  ├─ GrypeScanner        │   │
+                          │  │  ├─ SyftScanner         │   │
+                          │  │  └─ TruffleHogScanner   │   │
+                          │  │  + HadolintScanner      │   │
+                          │  └────────────────────────┘   │
+                          │                               │
+                          │  scan_mode == "dockerfile":   │
+                          │  └─ HadolintScanner only      │
+                          └───────────────────────────────┘
                                         │ docker run --rm
                           ┌─────────────▼─────────────────┐
                           │  Docker Engine (host socket)   │
-                          │                               │
                           │  aquasec/trivy                │
                           │  anchore/grype                │
                           │  anchore/syft                 │
+                          │  trufflesecurity/trufflehog   │
                           │  hadolint/hadolint            │
                           └───────────────────────────────┘
 ```
@@ -72,63 +78,75 @@
 ## 2. Структура проєкту
 
 ```
-containergard/
+ContainerGuard/
 │
-├── docker-compose.yml          # оркестрація всіх сервісів
-├── .env                        # змінні середовища
-├── .env.example
+├── docker-compose.yml
+├── .env / .env.example
 │
 ├── app/                        # FastAPI-застосунок
 │   ├── main.py                 # точка входу, реєстрація роутерів
 │   ├── config.py               # налаштування через pydantic-settings
 │   ├── database.py             # async SQLAlchemy engine + session
 │   │
-│   ├── models/                 # SQLAlchemy ORM-моделі
-│   │   ├── __init__.py
-│   │   ├── scan.py             # Scan
+│   ├── models/
+│   │   ├── scan.py             # Scan (status, scan_mode, progress, stage, security_score)
 │   │   ├── vulnerability.py    # Vulnerability
 │   │   ├── sbom.py             # SbomComponent
-│   │   └── dockerfile_issue.py # DockerfileIssue
+│   │   ├── dockerfile_issue.py # DockerfileIssue
+│   │   └── secret.py           # Secret (TruffleHog)
 │   │
-│   ├── schemas/                # Pydantic-схеми (request / response)
-│   │   ├── scan.py
+│   ├── schemas/
+│   │   ├── scan.py             # ScanStatus (включає progress, stage, scan_mode)
 │   │   └── vulnerability.py
 │   │
-│   ├── routers/                # HTTP-маршрути
-│   │   ├── pages.py            # GET / (HTML-сторінки)
-│   │   └── api.py              # GET /api/... (JSON для htmx)
+│   ├── routers/
+│   │   ├── pages.py            # HTML-сторінки (GET /, POST /scan, GET /results, /history)
+│   │   ├── api.py              # JSON API (POST /api/scan, GET /api/scan/{id}/*)
+│   │   └── hx.py               # HTML-фрагменти для htmx (/hx/scan/{id}/*)
 │   │
-│   ├── services/               # бізнес-логіка
-│   │   ├── scan_service.py     # створення скану, запуск задачі
-│   │   └── score_service.py    # розрахунок Security Score
+│   ├── services/
+│   │   ├── scan_service.py     # create_scan(): запис в БД + Celery send_task
+│   │   └── score_service.py    # (не використовується напряму — логіка в worker)
 │   │
-│   ├── templates/              # Jinja2-шаблони
+│   ├── templates/
 │   │   ├── base.html
-│   │   ├── index.html
-│   │   ├── results.html
-│   │   └── history.html
+│   │   ├── index.html          # перемикач режимів Образ / Dockerfile
+│   │   ├── results.html        # умовний рендер під scan_mode
+│   │   ├── history.html
+│   │   └── partials/
+│   │       ├── summary.html            # gauge + CVE-сітка
+│   │       ├── dockerfile_summary.html # gauge + Error/Warning/Info-сітка
+│   │       ├── vuln_table.html
+│   │       ├── sbom_table.html
+│   │       ├── dockerfile_table.html
+│   │       ├── secrets_table.html
+│   │       ├── charts.html             # 4 графіки (режим образу)
+│   │       └── dockerfile_charts.html  # 2 графіки (режим dockerfile)
 │   │
 │   └── static/
-│       ├── css/
-│       │   └── style.css
+│       ├── css/style.css
 │       └── js/
-│           └── htmx.min.js
+│           ├── htmx.min.js
+│           └── chart.umd.min.js
 │
-├── worker/                     # Celery worker (окремий контейнер)
-│   ├── celery_app.py           # ініціалізація Celery
-│   ├── tasks.py                # задача scan_image_task
-│   │
-│   └── scanners/               # обгортки над Docker-сканерами
-│       ├── __init__.py
-│       ├── base.py             # абстрактний BaseScanner
-│       ├── trivy.py            # TrivyScanner
-│       ├── grype.py            # GrypeScanner
-│       ├── syft.py             # SyftScanner
-│       └── hadolint.py         # HadolintScanner
+├── worker/
+│   ├── celery_app.py
+│   ├── tasks.py                # scan_image_task, _run_dockerfile_scan
+│   └── scanners/
+│       ├── base.py             # BaseScanner (_docker_run, mount_docker)
+│       ├── trivy.py
+│       ├── grype.py
+│       ├── syft.py
+│       ├── hadolint.py
+│       └── trufflehog.py
 │
-├── migrations/                 # Alembic-міграції БД
-│   ├── env.py
+├── migrations/
 │   └── versions/
+│       ├── 0001_initial.py           # scans, vulnerabilities, sbom_components, dockerfile_issues
+│       ├── 0002_add_secrets.py       # таблиця secrets
+│       ├── 0003_add_secret_raw_value.py
+│       ├── 0004_add_scan_progress.py # колонки progress, stage
+│       └── 0005_add_scan_mode.py     # колонка scan_mode
 │
 └── requirements.txt
 ```
@@ -139,516 +157,376 @@ containergard/
 
 ### 3.1 FastAPI (app/)
 
-Відповідає виключно за:
-- рендеринг HTML-сторінок через Jinja2
-- прийом форми запуску сканування
-- JSON-ендпоінти для htmx-поллінгу статусу
-- читання результатів з БД
+- Рендеринг HTML-сторінок через Jinja2
+- Прийом форми та JSON API для запуску сканувань
+- HTML-фрагменти для htmx (`/hx/`) і JSON (`/api/`)
+- Читання результатів з БД (async SQLAlchemy)
 
-**Не виконує сканування напряму** — лише ставить задачу в чергу Celery.
+**Не виконує сканування** — тільки ставить задачу в чергу Celery.
 
 ### 3.2 Celery Worker (worker/)
 
-- запускається як окремий Docker-контейнер
-- отримує задачу `scan_image_task(scan_id, image_name, dockerfile_content)`
-- послідовно викликає всі сканери
-- записує результати в PostgreSQL
-- оновлює статус скану (`pending` → `running` → `completed` / `failed`)
+- Окремий Docker-контейнер
+- Два режими виконання задачі `scan_image_task`:
+  - `scan_mode="image"` — 4 паралельних сканери (Trivy, Grype, Syft, TruffleHog) + Hadolint опціонально
+  - `scan_mode="dockerfile"` — тільки Hadolint
+- Оновлює `progress` і `stage` в БД після кожного завершеного сканера (через `add_done_callback`)
+- Записує результати в PostgreSQL через sync psycopg2
 
 ### 3.3 Redis
 
-Виконує дві ролі:
 - **Broker** — черга задач між FastAPI і Celery
-- **Result backend** — зберігання статусу виконання задач Celery
+- **Result backend** — зберігання статусів задач Celery
 
 ### 3.4 PostgreSQL
 
-Постійне сховище всіх результатів сканувань. Детальна схема — у розділі 4.
+Постійне сховище всіх результатів. Два DB-клієнти:
+- `app/` — async SQLAlchemy + asyncpg
+- `worker/` — sync psycopg2 (Celery синхронний)
 
 ---
 
 ## 4. База даних
 
-### Діаграма таблиць
-
 ```
 scans
-─────────────────────────────────────────
-id            UUID         PK
-image_name    VARCHAR(255) NOT NULL
-status        ENUM         pending|running|completed|failed
-security_score INT         0-100, NULL поки не завершено
-created_at    TIMESTAMP    DEFAULT now()
-finished_at   TIMESTAMP    NULL
-error_message TEXT         NULL
+─────────────────────────────────────────────────────
+id             VARCHAR(36)  PK
+image_name     VARCHAR(255) NOT NULL
+status         ENUM         pending|running|completed|failed
+scan_mode      VARCHAR(20)  image|dockerfile  DEFAULT 'image'
+security_score INT          0-100, NULL поки не завершено
+progress       INT          0-100, поточний прогрес  DEFAULT 0
+stage          VARCHAR(120) текст поточного етапу, NULL
+created_at     TIMESTAMP    DEFAULT now()
+finished_at    TIMESTAMP    NULL
+error_message  TEXT         NULL
 
     │ 1
     │
     ├─── vulnerabilities (N)
-    │    ────────────────────────────────
-    │    id            UUID   PK
-    │    scan_id       UUID   FK → scans.id
-    │    cve_id        VARCHAR(30)     наприклад CVE-2023-1234
-    │    package_name  VARCHAR(255)
-    │    installed_ver VARCHAR(100)
-    │    fixed_ver     VARCHAR(100)
-    │    severity      ENUM   critical|high|medium|low|negligible
-    │    source        ENUM   trivy|grype    ← який сканер знайшов
-    │    title         TEXT
-    │    url           TEXT
+    │    id, scan_id, cve_id, package_name, installed_ver, fixed_ver
+    │    severity ENUM critical|high|medium|low|negligible
+    │    source   VARCHAR  trivy|grype|trivy+grype
+    │    title, url
     │
     ├─── sbom_components (N)
-    │    ────────────────────────────────
-    │    id            UUID   PK
-    │    scan_id       UUID   FK → scans.id
-    │    name          VARCHAR(255)
-    │    version       VARCHAR(100)
-    │    type          VARCHAR(50)    os|library|application
-    │    purl          TEXT           package URL (стандарт)
+    │    id, scan_id, name, version, type, purl
     │
-    └─── dockerfile_issues (N)
-         ────────────────────────────────
-         id            UUID   PK
-         scan_id       UUID   FK → scans.id
-         rule          VARCHAR(20)    наприклад DL3008
-         severity      ENUM   error|warning|info
-         line          INT
-         message       TEXT
+    ├─── dockerfile_issues (N)
+    │    id, scan_id, rule, line, message
+    │    severity ENUM error|warning|info
+    │
+    └─── secrets (N)
+         id, scan_id, detector_name, verified
+         raw_redacted  VARCHAR  (замаскований вигляд для відображення)
+         raw_value     TEXT     (повне значення, тільки для БД і модального вікна)
+         file_path, layer, line, decoder_name
 ```
 
-### Індекси
+### ENUM-типи PostgreSQL
 
 ```sql
-CREATE INDEX idx_vuln_scan_id    ON vulnerabilities(scan_id);
-CREATE INDEX idx_vuln_severity   ON vulnerabilities(severity);
-CREATE INDEX idx_vuln_cve_id     ON vulnerabilities(cve_id);
-CREATE INDEX idx_sbom_scan_id    ON sbom_components(scan_id);
-CREATE INDEX idx_issues_scan_id  ON dockerfile_issues(scan_id);
+CREATE TYPE scan_status   AS ENUM ('pending','running','completed','failed');
+CREATE TYPE vuln_severity AS ENUM ('critical','high','medium','low','negligible');
+CREATE TYPE issue_severity AS ENUM ('error','warning','info');
 ```
+
+> При помилці `DuplicateObjectError` під час міграції — `docker compose down -v`.
 
 ---
 
 ## 5. API
 
-### HTML-сторінки (routers/pages.py)
+### POST /api/scan — запуск сканування
+
+```json
+// Тіло запиту
+{
+  "image_name": "nginx:latest",      // обов'язково для scan_mode=image
+  "scan_mode": "image",              // "image" (за замовчуванням) | "dockerfile"
+  "dockerfile_content": "FROM ..."   // опціонально для image, обов'язково для dockerfile
+}
+
+// Відповідь 201
+{
+  "id": "uuid",
+  "image_name": "nginx:latest",
+  "status": "pending",
+  "scan_mode": "image"
+}
+```
+
+### GET /api/scan/{id}/status
+
+```json
+{
+  "id": "uuid",
+  "status": "running",
+  "scan_mode": "image",
+  "progress": 44,
+  "stage": "Grype завершено",
+  "security_score": null,
+  "created_at": "...",
+  "finished_at": null,
+  "error_message": null
+}
+```
+
+### Повна таблиця ендпоінтів
 
 | Метод | URL | Опис |
 |-------|-----|------|
-| GET | `/` | Головна сторінка з формою |
-| POST | `/scan` | Прийом форми, запуск задачі → редірект на `/results/{id}` |
-| GET | `/results/{id}` | Сторінка результатів скану |
-| GET | `/history` | Список останніх 50 сканувань |
+| POST | `/api/scan` | Запустити скан |
+| GET | `/api/scan/{id}/status` | Статус + прогрес |
+| GET | `/api/scan/{id}/summary` | Score + CVE-зведення |
+| GET | `/api/scan/{id}/vulnerabilities` | CVE (`?severity=&source=`) |
+| GET | `/api/scan/{id}/sbom` | SBOM-компоненти |
+| GET | `/api/scan/{id}/sbom/download` | SBOM CycloneDX JSON |
+| GET | `/api/scan/{id}/dockerfile` | Dockerfile Issues |
+| GET | `/api/scan/{id}/secrets` | Секрети |
+| GET | `/api/scan/{id}/report` | Повний JSON-звіт |
+| GET | `/api/scan/{id}/vulnerabilities/csv` | CVE як CSV |
+| DELETE | `/api/scan/{id}` | Видалити скан (→ 204) |
 
-### JSON API для htmx (routers/api.py)
+### HTML-фрагменти (htmx)
 
-| Метод | URL | Опис |
-|-------|-----|------|
-| GET | `/api/scan/{id}/status` | Статус та прогрес (`pending/running/completed`) |
-| GET | `/api/scan/{id}/summary` | Security Score + CVE-зведення по severity |
-| GET | `/api/scan/{id}/vulnerabilities` | Список CVE з фільтрами `?severity=critical&source=trivy` |
-| GET | `/api/scan/{id}/sbom` | Список SBOM-компонентів |
-| GET | `/api/scan/{id}/sbom/download` | Завантаження SBOM як CycloneDX JSON |
-| GET | `/api/scan/{id}/dockerfile` | Проблеми Dockerfile |
+| GET | `/hx/scan/{id}/summary` | SVG-gauge + CVE-сітка |
+|-----|------------------------|----------------------|
+| GET | `/hx/scan/{id}/dockerfile-summary` | SVG-gauge + Error/Warning/Info |
+| GET | `/hx/scan/{id}/vulnerabilities` | Таблиця CVE |
+| GET | `/hx/scan/{id}/sbom` | Таблиця SBOM |
+| GET | `/hx/scan/{id}/dockerfile` | Таблиця Issues |
+| GET | `/hx/scan/{id}/secrets` | Таблиця секретів |
+| GET | `/hx/scan/{id}/charts` | 4 графіки (режим образу) |
+| GET | `/hx/scan/{id}/dockerfile-charts` | 2 графіки (режим dockerfile) |
 
 ---
 
 ## 6. Сканери
 
-Кожен сканер — клас, що наслідує `BaseScanner`:
+Всі наслідують `BaseScanner` (`worker/scanners/base.py`). Метод `_docker_run()` запускає `docker run --rm`. Trivy, Grype і TruffleHog потребують `mount_docker=True` (монтує `/var/run/docker.sock`) — вони самостійно завантажують образ.
 
-```python
-# worker/scanners/base.py
-from abc import ABC, abstractmethod
+| Сканер | Docker-образ | mount_docker | Вхід | Вихід |
+|--------|-------------|-------------|------|-------|
+| TrivyScanner | `aquasec/trivy` | ✓ | image name | JSON |
+| GrypeScanner | `anchore/grype` | ✓ | image name | JSON |
+| SyftScanner | `anchore/syft` | — | image name | CycloneDX JSON |
+| TruffleHogScanner | `trufflesecurity/trufflehog` | ✓ | image name | NDJSON |
+| HadolintScanner | `hadolint/hadolint` | — | Dockerfile (stdin) | JSON |
 
-class BaseScanner(ABC):
-    def run(self, image_name: str, **kwargs) -> dict:
-        """Запускає Docker-контейнер сканера, повертає розпарсений dict."""
-        ...
-
-    def _docker_run(self, image: str, args: list[str]) -> str:
-        """subprocess.run(['docker', 'run', '--rm', image, *args])"""
-        ...
-
-    @abstractmethod
-    def parse(self, raw_output: str) -> dict:
-        ...
-```
-
-### Параметри запуску сканерів
-
-```python
-# worker/scanners/trivy.py
-DOCKER_IMAGE = "aquasec/trivy:latest"
-
-def run(self, image_name: str) -> dict:
-    args = [
-        "image",
-        "--format", "json",
-        "--quiet",
-        image_name
-    ]
-    # docker run --rm aquasec/trivy image --format json --quiet nginx:latest
-```
-
-```python
-# worker/scanners/grype.py
-DOCKER_IMAGE = "anchore/grype:latest"
-
-def run(self, image_name: str) -> dict:
-    args = [
-        image_name,
-        "-o", "json"
-    ]
-    # docker run --rm anchore/grype nginx:latest -o json
-```
-
-```python
-# worker/scanners/syft.py
-DOCKER_IMAGE = "anchore/syft:latest"
-
-def run(self, image_name: str) -> dict:
-    args = [
-        image_name,
-        "-o", "cyclonedx-json"
-    ]
-    # docker run --rm anchore/syft nginx:latest -o cyclonedx-json
-```
-
-```python
-# worker/scanners/hadolint.py
-DOCKER_IMAGE = "hadolint/hadolint:latest"
-
-def run(self, dockerfile_content: str) -> dict:
-    # dockerfile передається через stdin
-    # docker run --rm -i hadolint/hadolint hadolint --format json -
-```
-
-### Доступ до Docker socket
-
-Worker-контейнер потребує доступу до Docker Engine хост-машини:
-
-```yaml
-# docker-compose.yml (фрагмент worker)
-volumes:
-  - /var/run/docker.sock:/var/run/docker.sock
-```
+TruffleHog виводить NDJSON (один JSON-об'єкт на рядок). Парсер пропускає не-JSON рядки. Зберігаються `raw_value` (повне значення) і `raw_redacted` (маскований вигляд). `raw_value` ніколи не логується.
 
 ---
 
 ## 7. Черга задач (Celery + Redis)
 
-### Ініціалізація
+### Задача `scan_image_task`
 
 ```python
-# worker/celery_app.py
-from celery import Celery
-
-celery = Celery(
-    "containergard",
-    broker="redis://redis:6379/0",
-    backend="redis://redis:6379/1",
-)
-
-celery.conf.update(
-    task_serializer="json",
-    result_expires=86400,       # результати Celery живуть 24 години
-    worker_concurrency=2,       # два паралельних скани
-)
-```
-
-### Задача сканування
-
-```python
-# worker/tasks.py
 @celery.task(bind=True, name="scan_image")
-def scan_image_task(self, scan_id: str, image_name: str,
-                    dockerfile_content: str | None = None):
+def scan_image_task(self, scan_id, image_name,
+                    dockerfile_content=None, scan_mode="image"):
 
-    # 1. Оновити статус → running
-    update_scan_status(scan_id, "running")
+    if scan_mode == "dockerfile":
+        _run_dockerfile_scan(scan_id, dockerfile_content)
+        return
 
-    try:
-        # 2. Паралельний запуск Trivy + Grype + Syft
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            f_trivy  = executor.submit(TrivyScanner().run,  image_name)
-            f_grype  = executor.submit(GrypeScanner().run,  image_name)
-            f_syft   = executor.submit(SyftScanner().run,   image_name)
+    # --- режим "image" ---
+    _update_status(scan_id, "running")
+    _update_progress(scan_id, 5, "Перевірка образу...")
+    _check_image_exists(image_name)           # docker pull — fail-fast
+    _update_progress(scan_id, 10, "Запуск сканерів")
 
-        # 3. Hadolint (тільки якщо є Dockerfile)
-        hadolint_result = {}
-        if dockerfile_content:
-            hadolint_result = HadolintScanner().run(dockerfile_content)
+    # Паралельний запуск 4 сканерів
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        f_trivy      = executor.submit(TrivyScanner().run, image_name)
+        f_grype      = executor.submit(GrypeScanner().run, image_name)
+        f_syft       = executor.submit(SyftScanner().run, image_name)
+        f_trufflehog = executor.submit(TruffleHogScanner().run, image_name)
 
-        # 4. Агрегація + дедупликація CVE
-        vulns = merge_vulnerabilities(f_trivy.result(), f_grype.result())
+        # Оновлення прогресу після кожного завершеного (thread-safe callback)
+        f_trivy.add_done_callback(on_scanner_done("trivy"))
+        f_grype.add_done_callback(on_scanner_done("grype"))
+        f_syft.add_done_callback(on_scanner_done("syft"))
+        f_trufflehog.add_done_callback(on_scanner_done("trufflehog"))
 
-        # 5. Запис в БД
-        save_vulnerabilities(scan_id, vulns)
-        save_sbom(scan_id, f_syft.result())
-        save_dockerfile_issues(scan_id, hadolint_result)
+    # Після всіх 4: progress = 10 + 4×17 = 78%
+    vulns = _merge_vulnerabilities(trivy_result, grype_result)
 
-        # 6. Розрахунок Security Score
-        score = calculate_score(vulns)
-        update_scan_status(scan_id, "completed", score=score)
+    if dockerfile_content:
+        hadolint_result = HadolintScanner().run(dockerfile_content)
+        _update_progress(scan_id, 85, "Hadolint завершено")
 
-    except Exception as e:
-        update_scan_status(scan_id, "failed", error=str(e))
-        raise
+    _update_progress(scan_id, 92, "Збереження результатів...")
+    # ... save to DB ...
+    _update_status(scan_id, "completed", score=score)
 ```
+
+### Прогрес (режим «Образ»)
+
+| Подія | progress |
+|-------|---------|
+| Старт | 5% |
+| Образ завантажено | 10% |
+| +1 сканер завершено | 27% |
+| +2 сканери | 44% |
+| +3 сканери | 61% |
+| +4 сканери | 78% |
+| Hadolint (якщо є) | 85% |
+| Збереження | 92% |
 
 ### Алгоритм дедупликації CVE
 
-Trivy і Grype можуть знаходити одну й ту саму CVE. Правило злиття:
-
-1. Групуємо за `cve_id + package_name`
-2. Якщо обидва сканери знайшли — записуємо `source = "trivy+grype"`
-3. Якщо тільки один — `source = "trivy"` або `source = "grype"`
-4. Пріоритет severity: беремо вищий із двох
+1. Групуємо за `(cve_id, package_name)`
+2. Якщо обидва знайшли → `source = "trivy+grype"`, беремо вищий severity
+3. Тільки один → `source = "trivy"` або `"grype"`
 
 ---
 
 ## 8. Frontend (Jinja2 + htmx)
 
-### Потік htmx-поллінгу на сторінці результатів
+### Два режими на головній сторінці
 
-```html
-<!-- templates/results.html (спрощено) -->
+JS-перемикач змінює `scan_mode` hidden input, показує/приховує поле образу, змінює `required` на textarea.
 
-<!-- 1. Поки статус не completed — кожні 3 сек опитуємо API -->
-<div id="status-block"
-     hx-get="/api/scan/{{ scan_id }}/status"
-     hx-trigger="every 3s [status != 'completed']"
-     hx-swap="outerHTML">
-  <p>⏳ Сканування виконується...</p>
-</div>
+### htmx-поллінг прогресу
 
-<!-- 2. Коли completed — htmx замінює блок на реальні результати -->
-<!-- Відповідь /api/scan/{id}/status при completed містить: -->
-<div id="status-block">
-  <!-- Security Score gauge -->
-  <div hx-get="/api/scan/{{ scan_id }}/summary"
-       hx-trigger="load"
-       hx-target="#summary-block">
-  </div>
-
-  <!-- Таблиця CVE з live-фільтрами -->
-  <select hx-get="/api/scan/{{ scan_id }}/vulnerabilities"
-          hx-target="#vuln-table"
-          hx-trigger="change"
-          name="severity">
-    <option value="">Всі</option>
-    <option value="critical">Critical</option>
-    <option value="high">High</option>
-  </select>
-
-  <div id="vuln-table"
-       hx-get="/api/scan/{{ scan_id }}/vulnerabilities"
-       hx-trigger="load">
-  </div>
-</div>
+```javascript
+// results.html — кожні 3 сек поки pending/running
+document.body.addEventListener("htmx:afterRequest", function(evt) {
+  const data = JSON.parse(evt.detail.xhr.responseText);
+  if (data.status === "completed" || data.status === "failed") {
+    window.location.reload();
+  } else {
+    // Оновити progress bar і чипи сканерів без перезавантаження
+    fill.style.width = data.progress + "%";
+    pctEl.textContent = data.progress + "%";
+    stageEl.textContent = data.stage;
+  }
+});
 ```
 
-### Сторінки
+### Умовний рендер результатів
 
-| Шаблон | Опис |
-|--------|------|
-| `base.html` | Навігація, підключення htmx.min.js та style.css |
-| `index.html` | Форма: поле image name + textarea Dockerfile |
-| `results.html` | Дашборд: Score, CVE-таблиця, SBOM, Dockerfile-issues |
-| `history.html` | Таблиця минулих сканувань з посиланнями |
+`results.html` перевіряє `scan.scan_mode`:
+- `"image"` → gauge CVE + 5 табів (Вразливості, SBOM, Dockerfile, Секрети, Аналітика)
+- `"dockerfile"` → gauge Dockerfile Score + 2 таби (Проблеми, Аналітика)
+
+### Lazy-loading вкладок
+
+- Всі таби завантажують дані через `hx-trigger="load"` при першому відкритті
+- Вкладка «Аналітика» — `hx-trigger="click once"` (Chart.js не рендерить у прихованих елементах)
 
 ---
 
 ## 9. Docker Compose
 
 ```yaml
-# docker-compose.yml
-version: "3.9"
-
 services:
-
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: containergard
-      POSTGRES_USER: cguser
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "cguser"]
-      interval: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-
-  app:
-    build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    ports:
-      - "8000:8000"
-    env_file: .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - .:/code
-
-  worker:
-    build: .
-    command: celery -A worker.celery_app worker --loglevel=info
-    env_file: .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - .:/code
-      - /var/run/docker.sock:/var/run/docker.sock  # доступ до Docker Engine
-
-volumes:
-  pg_data:
+  db:      # postgres:16-alpine
+  redis:   # redis:7-alpine
+  app:     # uvicorn --reload, port 8000, volume .:/code
+  worker:  # celery worker, volume /var/run/docker.sock
 ```
 
-### Dockerfile застосунку
-
-```dockerfile
-FROM python:3.12-slim
-
-WORKDIR /code
-
-RUN apt-get update && apt-get install -y docker.io && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-```
+`app` і `worker` будуються з одного `Dockerfile`, але запускаються з різними командами. `worker` додатково монтує Docker socket для запуску сканерів.
 
 ---
 
 ## 10. Потік даних
 
+### Режим «Образ»
+
 ```
-Користувач вводить "nginx:latest" → натискає "Сканувати"
-        │
-        ▼
-POST /scan  (FastAPI)
-  1. Створює запис Scan у БД зі статусом "pending"
-  2. Викликає celery.send_task("scan_image", args=[scan_id, image_name])
-  3. Повертає redirect → GET /results/{scan_id}
-        │
-        ▼
-GET /results/{scan_id}  (FastAPI)
-  Рендерить results.html з scan_id
-  htmx починає поллінг /api/scan/{scan_id}/status кожні 3 сек
-        │
-        ▼
-Celery Worker (паралельно)
-  1. docker run aquasec/trivy   → JSON → parse → []Vulnerability
-  2. docker run anchore/grype   → JSON → parse → []Vulnerability
-  3. docker run anchore/syft    → CycloneDX JSON → parse → []SbomComponent
-  4. docker run hadolint        → JSON → parse → []DockerfileIssue
-  5. merge_vulnerabilities() — дедупликація
-  6. calculate_score()
-  7. Запис у PostgreSQL
-  8. Статус → "completed"
-        │
-        ▼
-htmx отримує status="completed"
-  → завантажує summary, CVE-таблицю, SBOM, Dockerfile-issues
-  → зупиняє поллінг
+POST /scan або POST /api/scan
+  → create_scan(): запис Scan(status=pending) в БД
+  → celery.send_task("scan_image", scan_mode="image")
+  → redirect → GET /results/{id}
+
+Celery Worker:
+  status=running, progress=5
+  docker pull → progress=10
+  ThreadPoolExecutor(4):
+    TrivyScanner   → done → progress=27
+    GrypeScanner   → done → progress=44
+    SyftScanner    → done → progress=61
+    TruffleHogScanner → done → progress=78
+  [HadolintScanner якщо є Dockerfile] → progress=85
+  merge_vulnerabilities() (dedup Trivy+Grype)
+  calculate_score()
+  save → progress=92
+  status=completed, security_score=N
+
+Browser (htmx polling /api/scan/{id}/status кожні 3с):
+  → оновлює progress bar
+  → на completed → window.location.reload()
+  → lazy-load summary, CVE-table, SBOM, secrets, dockerfile, charts
+```
+
+### Режим «Dockerfile»
+
+```
+POST /scan або POST /api/scan (scan_mode=dockerfile)
+  → create_scan(): image_name="Dockerfile"
+  → celery.send_task("scan_image", scan_mode="dockerfile")
+
+Celery Worker:
+  status=running, progress=10
+  HadolintScanner().run(dockerfile_content)
+  calculate_dockerfile_score()
+  save → progress=85
+  status=completed
+
+Browser:
+  → на completed → reload
+  → lazy-load dockerfile_summary, dockerfile_table, dockerfile_charts
 ```
 
 ---
 
-## 11. Security Score — алгоритм
+## 11. Алгоритми оцінювання
 
-Оцінка від **0** (найгірше) до **100** (найкраще).
+### Security Score (режим «Образ»)
+
+Логарифмічна шкала — реалістичніша для образів із великою кількістю low/medium CVE:
 
 ```python
-# app/services/score_service.py
-
-WEIGHTS = {
-    "critical":   -20,
-    "high":       -10,
-    "medium":      -3,
-    "low":         -1,
-    "negligible":   0,
-}
-
-MAX_PENALTY = 100   # при якому штрафі score = 0
-
-def calculate_score(vulnerabilities: list[dict]) -> int:
-    penalty = 0
-    for vuln in vulnerabilities:
-        penalty += abs(WEIGHTS.get(vuln["severity"], 0))
-
-    score = max(0, 100 - int((penalty / MAX_PENALTY) * 100))
-    return score
+import math
+WEIGHTS = {"critical": 7, "high": 3, "medium": 1, "low": 0.3, "negligible": 0}
+SOURCE_WEIGHT = {"trivy+grype": 1.0, "trivy": 0.1, "grype": 0.1}
+penalty = sum(WEIGHTS[v["severity"]] * SOURCE_WEIGHT.get(v["source"], 0.1) for v in vulns)
+score = max(0, round(100 - 30 * math.log10(1 + penalty))) if penalty > 0 else 100
 ```
 
-| Діапазон | Оцінка |
-|----------|--------|
-| 80–100 | 🟢 Безпечний |
-| 50–79  | 🟡 Є ризики |
-| 0–49   | 🔴 Критичний стан |
+CVE підтверджена обома сканерами — повна вага. Знайдена тільки одним — вага 0.1 (Grype через NVD часто знаходить CVE, які Alpine SecDB вважає неактуальними).
+
+### Dockerfile Score (режим «Dockerfile»)
+
+```python
+WEIGHTS = {"error": 10, "warning": 3, "info": 1}
+penalty = sum(WEIGHTS.get(i["severity"], 0) for i in issues)
+score = max(0, 100 - penalty)
+```
+
+### Вердикти
+
+| Діапазон | Режим образу | Режим Dockerfile |
+|----------|-------------|-----------------|
+| 65–100 | Безпечний | Добре написаний |
+| 40–64 | Є ризики | Є порушення |
+| 0–39 | Критичний стан | Потребує виправлень |
 
 ---
 
 ## 12. Змінні середовища
 
 ```bash
-# .env.example
-
-# PostgreSQL
-DB_HOST=db
-DB_PORT=5432
-DB_NAME=containergard
-DB_USER=cguser
-DB_PASSWORD=changeme
-
 DATABASE_URL=postgresql+asyncpg://cguser:changeme@db:5432/containergard
 
-# Redis / Celery
-REDIS_URL=redis://redis:6379/0
 CELERY_BROKER_URL=redis://redis:6379/0
 CELERY_RESULT_BACKEND=redis://redis:6379/1
 
-# Застосунок
+DB_PASSWORD=changeme
 APP_SECRET_KEY=change-this-secret
-DEBUG=true
 ```
-
----
-
-## Порядок запуску для розробки
-
-```bash
-# 1. Клонувати репозиторій і перейти в директорію
-git clone <repo>
-cd containergard
-
-# 2. Скопіювати змінні середовища
-cp .env.example .env
-
-# 3. Підняти всі сервіси
-docker compose up --build
-
-# 4. Застосувати міграції БД (в окремому терміналі)
-docker compose exec app alembic upgrade head
-
-# 5. Відкрити застосунок
-open http://localhost:8000
-```
-
----
-
-*Документ описує архітектуру v1.0. Розширення: підтримка приватних реєстрів (credentials), webhook-нотифікації, порівняння двох сканів одного образу.*

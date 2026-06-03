@@ -1,0 +1,122 @@
+<div class="charts-grid" style="grid-template-columns: repeat(2, 1fr);">
+
+  <!-- Severity distribution -->
+  <div class="chart-card">
+    <div class="chart-title">Розподіл за severity</div>
+    <div class="chart-subtitle">Error · Warning · Info</div>
+    <div class="chart-wrap">
+      <canvas id="chartDfSeverity"></canvas>
+    </div>
+  </div>
+
+  <!-- Top rules -->
+  <div class="chart-card">
+    <div class="chart-title">Топ порушених правил</div>
+    <div class="chart-subtitle">Правила Hadolint за кількістю спрацювань</div>
+    <div class="chart-wrap">
+      <canvas id="chartDfRules"></canvas>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function() {
+  const counts    = {{ counts | tojson }};
+  const topRules  = {{ top_rules | tojson }};
+  const total     = {{ total }};
+
+  Chart.defaults.color       = '#8892a4';
+  Chart.defaults.borderColor = '#2e3350';
+  Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  Chart.defaults.font.size   = 12;
+
+  const donutCenterPlugin = {
+    id: 'donutCenterDf',
+    beforeDraw(chart) {
+      const opts = chart.options.plugins.donutCenterDf;
+      if (!opts || !opts.line1) return;
+      const arc = chart.getDatasetMeta(0).data[0];
+      if (!arc) return;
+      const { ctx } = chart;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = '800 22px sans-serif';
+      ctx.fillStyle = opts.color;
+      ctx.fillText(opts.line1, arc.x, arc.y - 9);
+      ctx.font = '11px sans-serif';
+      ctx.fillStyle = '#8892a4';
+      ctx.fillText(opts.line2, arc.x, arc.y + 10);
+      ctx.restore();
+    }
+  };
+  Chart.register(donutCenterPlugin);
+
+  /* 1 — Severity donut */
+  const errorPct = total > 0 ? Math.round((counts.error / total) * 100) : 0;
+  const centerColor = counts.error > 0 ? '#ef4444' : (counts.warning > 0 ? '#eab308' : '#a5b4fc');
+
+  new Chart(document.getElementById('chartDfSeverity'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Error', 'Warning', 'Info'],
+      datasets: [{
+        data: [counts.error, counts.warning, counts.info],
+        backgroundColor: ['#ef4444', '#eab308', '#a5b4fc'],
+        borderWidth: 2,
+        borderColor: '#1a1d27',
+        hoverOffset: 8,
+      }]
+    },
+    options: {
+      maintainAspectRatio: false,
+      cutout: '65%',
+      plugins: {
+        legend: { position: 'right', labels: { boxWidth: 10, padding: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ${ctx.label}: ${ctx.parsed} (${((ctx.parsed / (total || 1)) * 100).toFixed(1)}%)`,
+          }
+        },
+        donutCenterDf: { line1: `${errorPct}%`, line2: 'errors', color: centerColor },
+      }
+    }
+  });
+
+  /* 2 — Top rules horizontal bar */
+  new Chart(document.getElementById('chartDfRules'), {
+    type: 'bar',
+    data: {
+      labels: topRules.map(r => r[0]),
+      datasets: [{
+        label: 'Порушень',
+        data: topRules.map(r => r[1]),
+        backgroundColor: topRules.map(r => {
+          if (r[2] === 'error')   return 'rgba(239,68,68,0.7)';
+          if (r[2] === 'warning') return 'rgba(234,179,8,0.7)';
+          return 'rgba(165,180,252,0.7)';
+        }),
+        borderRadius: 4,
+        borderSkipped: false,
+      }]
+    },
+    options: {
+      maintainAspectRatio: false,
+      indexAxis: 'y',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ${ctx.parsed.x} порушень`,
+          }
+        }
+      },
+      scales: {
+        x: { grid: { color: '#2e3350' }, ticks: { precision: 0 } },
+        y: { grid: { display: false }, ticks: { font: { family: '"Fira Code", monospace', size: 11 } } },
+      }
+    }
+  });
+})();
+</script>

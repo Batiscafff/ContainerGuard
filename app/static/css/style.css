@@ -464,8 +464,11 @@ a.cve-link:hover { text-decoration: underline; }
 .stat-medium .stat-num,   .stat-medium .stat-label   { color: var(--medium); }
 .stat-low .stat-num,      .stat-low .stat-label      { color: var(--low); }
 .stat-negligible .stat-num,.stat-negligible .stat-label{ color: var(--negligible); }
-.stat-total .stat-num   { color: var(--text); }
-.stat-total .stat-label { color: var(--text-muted); }
+.stat-total   .stat-num,   .stat-total   .stat-label { color: var(--text); }
+.stat-total   .stat-label { color: var(--text-muted); }
+.stat-error   .stat-num,   .stat-error   .stat-label { color: var(--critical); }
+.stat-warning .stat-num,   .stat-warning .stat-label { color: var(--medium); }
+.stat-info-df .stat-num,   .stat-info-df .stat-label { color: #a5b4fc; }
 
 /* ── Scan meta row ───────────────────────────────────────────── */
 .scan-meta {

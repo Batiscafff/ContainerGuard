@@ -117,16 +117,47 @@
 
 {% if scan.scan_mode == "dockerfile" %}
 
-  <!-- Dockerfile-only results -->
-  <div class="card">
-    <div class="card-header">
-      <h3>Dockerfile Issues <span id="df-issues-count" class="count-badge"></span></h3>
-      <span class="mode-badge mode-badge-dockerfile">Dockerfile</span>
+  <!-- Dockerfile score + stats -->
+  <div id="df-summary-block"
+       hx-get="/hx/scan/{{ scan.id }}/dockerfile-summary"
+       hx-trigger="load"
+       hx-swap="outerHTML">
+    <div class="card" style="text-align:center;padding:2rem;"><div class="spinner"></div></div>
+  </div>
+
+  <!-- Tabs: Issues | Analytics -->
+  <div class="result-tabs">
+    <button class="tab-btn active" onclick="showTab('df-issues', this)">
+      Проблеми
+    </button>
+    <button class="tab-btn"
+            onclick="showTab('df-analytics', this)"
+            hx-get="/hx/scan/{{ scan.id }}/dockerfile-charts"
+            hx-target="#df-charts-container"
+            hx-trigger="click once">
+      Аналітика
+    </button>
+  </div>
+
+  <div id="tab-df-issues" class="tab-panel active">
+    <div class="card">
+      <div class="card-header">
+        <h3>Dockerfile Issues <span id="df-issues-count" class="count-badge"></span></h3>
+        <span class="mode-badge mode-badge-dockerfile">Hadolint</span>
+      </div>
+      <div id="dockerfile-table"
+           hx-get="/hx/scan/{{ scan.id }}/dockerfile"
+           hx-trigger="load">
+        <div class="spinner"></div>
+      </div>
     </div>
-    <div id="dockerfile-table"
-         hx-get="/hx/scan/{{ scan.id }}/dockerfile"
-         hx-trigger="load">
-      <div class="spinner"></div>
+  </div>
+
+  <div id="tab-df-analytics" class="tab-panel">
+    <div id="df-charts-container">
+      <div class="card" style="text-align:center;padding:2rem;color:var(--text-muted);font-size:0.9rem;">
+        Натисніть таб, щоб завантажити графіки
+      </div>
     </div>
   </div>
 

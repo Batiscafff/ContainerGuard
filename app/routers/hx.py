@@ -92,6 +92,54 @@ async def hx_secrets(request: Request, scan_id: str, db: AsyncSession = Depends(
     )
 
 
+@router.get("/scan/{scan_id}/dockerfile-summary", response_class=HTMLResponse)
+async def hx_dockerfile_summary(request: Request, scan_id: str, db: AsyncSession = Depends(get_db)):
+    scan = await _scan(scan_id, db)
+    result = await db.execute(
+        select(DockerfileIssue).where(DockerfileIssue.scan_id == scan_id)
+    )
+    issues = result.scalars().all()
+    counts = {"error": 0, "warning": 0, "info": 0}
+    for i in issues:
+        counts[i.severity] = counts.get(i.severity, 0) + 1
+    return templates.TemplateResponse(
+        "partials/dockerfile_summary.html",
+        {"request": request, "scan": scan, "counts": counts},
+    )
+
+
+@router.get("/scan/{scan_id}/dockerfile-charts", response_class=HTMLResponse)
+async def hx_dockerfile_charts(request: Request, scan_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(DockerfileIssue).where(DockerfileIssue.scan_id == scan_id)
+    )
+    issues = result.scalars().all()
+
+    counts = {"error": 0, "warning": 0, "info": 0}
+    rule_counts: dict[str, list] = {}
+    for i in issues:
+        counts[i.severity] = counts.get(i.severity, 0) + 1
+        if i.rule not in rule_counts:
+            rule_counts[i.rule] = [0, i.severity]
+        rule_counts[i.rule][0] += 1
+
+    top_rules = sorted(
+        [[rule, data[0], data[1]] for rule, data in rule_counts.items()],
+        key=lambda x: x[1],
+        reverse=True,
+    )[:12]
+
+    return templates.TemplateResponse(
+        "partials/dockerfile_charts.html",
+        {
+            "request": request,
+            "counts": counts,
+            "top_rules": top_rules,
+            "total": len(issues),
+        },
+    )
+
+
 @router.get("/scan/{scan_id}/charts", response_class=HTMLResponse)
 async def hx_charts(request: Request, scan_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(

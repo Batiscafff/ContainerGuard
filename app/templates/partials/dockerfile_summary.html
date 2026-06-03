@@ -1,8 +1,8 @@
 {% set score = scan.security_score %}
 {% if score is not none %}
-  {% if score >= 65 %}{% set cls = "good" %}{% set arc_color = "#22c55e" %}{% set verdict = "Безпечний" %}
-  {% elif score >= 40 %}{% set cls = "mid" %}{% set arc_color = "#eab308" %}{% set verdict = "Є ризики" %}
-  {% else %}{% set cls = "bad" %}{% set arc_color = "#ef4444" %}{% set verdict = "Критичний стан" %}{% endif %}
+  {% if score >= 80 %}{% set cls = "good" %}{% set arc_color = "#22c55e" %}{% set verdict = "Добре написаний" %}
+  {% elif score >= 50 %}{% set cls = "mid" %}{% set arc_color = "#eab308" %}{% set verdict = "Є порушення" %}
+  {% else %}{% set cls = "bad" %}{% set arc_color = "#ef4444" %}{% set verdict = "Потребує виправлень" %}{% endif %}
 {% else %}
   {% set cls = "bad" %}{% set arc_color = "var(--border)" %}{% set verdict = "" %}
 {% endif %}
@@ -15,31 +15,28 @@
 {% else %}
   {% set offset = arc_len %}
 {% endif %}
-{% set total = counts.critical + counts.high + counts.medium + counts.low + counts.negligible %}
+{% set total = counts.error + counts.warning + counts.info %}
 
-<div class="card" id="summary-block">
+<div class="card" id="df-summary-block">
   <div class="summary-layout">
 
-    <!-- Circular gauge -->
     <div class="gauge-wrap">
       <svg class="gauge-svg" width="140" height="140" viewBox="0 0 120 120">
         <defs>
-          <filter id="glow">
+          <filter id="glow-df">
             <feGaussianBlur stdDeviation="2" result="blur"/>
             <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
           </filter>
         </defs>
         <g transform="rotate(135 60 60)">
-          <!-- Background track -->
           <circle class="gauge-bg" cx="60" cy="60" r="54"
                   stroke-dasharray="{{ arc_len }} {{ gap_len }}"
                   stroke-dashoffset="0"/>
-          <!-- Score arc -->
           <circle class="gauge-arc" cx="60" cy="60" r="54"
                   stroke="{{ arc_color }}"
                   stroke-dasharray="{{ arc_len }} {{ gap_len }}"
                   stroke-dashoffset="{{ offset }}"
-                  {% if score is not none and score > 0 %}filter="url(#glow)"{% endif %}/>
+                  {% if score is not none and score > 0 %}filter="url(#glow-df)"{% endif %}/>
         </g>
         {% if score is not none %}
           <text x="60" y="55" class="gauge-center {{ cls }}" font-size="26" fill="{{ arc_color }}">{{ score }}</text>
@@ -51,33 +48,25 @@
       {% if verdict %}
         <div class="score-verdict {{ cls }}">{{ verdict }}</div>
       {% endif %}
+      <div style="font-size:0.7rem;color:var(--text-muted);margin-top:0.3rem;">Dockerfile Score</div>
     </div>
 
-    <!-- Stat grid -->
     <div class="stat-grid">
-      <div class="stat-box stat-critical">
-        <div class="stat-num">{{ counts.critical }}</div>
-        <div class="stat-label">Critical</div>
+      <div class="stat-box stat-error">
+        <div class="stat-num">{{ counts.error }}</div>
+        <div class="stat-label">Error</div>
       </div>
-      <div class="stat-box stat-high">
-        <div class="stat-num">{{ counts.high }}</div>
-        <div class="stat-label">High</div>
+      <div class="stat-box stat-warning">
+        <div class="stat-num">{{ counts.warning }}</div>
+        <div class="stat-label">Warning</div>
       </div>
-      <div class="stat-box stat-medium">
-        <div class="stat-num">{{ counts.medium }}</div>
-        <div class="stat-label">Medium</div>
+      <div class="stat-box stat-info-df">
+        <div class="stat-num">{{ counts.info }}</div>
+        <div class="stat-label">Info</div>
       </div>
-      <div class="stat-box stat-low">
-        <div class="stat-num">{{ counts.low }}</div>
-        <div class="stat-label">Low</div>
-      </div>
-      <div class="stat-box stat-negligible">
-        <div class="stat-num">{{ counts.negligible }}</div>
-        <div class="stat-label">Negligible</div>
-      </div>
-      <div class="stat-box stat-total">
+      <div class="stat-box stat-total" style="grid-column: span 3">
         <div class="stat-num">{{ total }}</div>
-        <div class="stat-label">Всього CVE</div>
+        <div class="stat-label">Всього порушень</div>
       </div>
     </div>
 

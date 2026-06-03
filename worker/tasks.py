@@ -1,3 +1,4 @@
+import math
 import os
 import re
 import subprocess
@@ -160,9 +161,17 @@ def _save_dockerfile_issues(scan_id: str, hadolint_result: dict):
 
 
 def _calculate_score(vulns: list[dict]) -> int:
-    weights = {"critical": 20, "high": 10, "medium": 3, "low": 1, "negligible": 0}
-    penalty = sum(weights.get(v["severity"], 0) for v in vulns)
-    return max(0, 100 - int((penalty / 100) * 100))
+    weights = {"critical": 7, "high": 3, "medium": 1, "low": 0.3, "negligible": 0}
+    # trivy+grype = підтверджена CVE, повна вага
+    # тільки один сканер = ймовірний шум (Grype/NVD часто знаходить неактуальні для Alpine)
+    source_weight = {"trivy+grype": 1.0, "trivy": 0.1, "grype": 0.1}
+    penalty = sum(
+        weights.get(v["severity"], 0) * source_weight.get(v.get("source", ""), 0.5)
+        for v in vulns
+    )
+    if penalty == 0:
+        return 100
+    return max(0, round(100 - 30 * math.log10(1 + penalty)))
 
 
 def _check_image_exists(image_name: str) -> None:
@@ -179,6 +188,12 @@ def _check_image_exists(image_name: str) -> None:
         raise RuntimeError(f"Не вдалось завантажити образ '{image_name}':\n{stderr[:400]}")
 
 
+def _calculate_dockerfile_score(issues: list[dict]) -> int:
+    weights = {"error": 10, "warning": 3, "info": 1}
+    penalty = sum(weights.get(i["severity"], 0) for i in issues)
+    return max(0, 100 - penalty)
+
+
 def _run_dockerfile_scan(scan_id: str, dockerfile_content: str | None):
     _update_status(scan_id, "running")
     _update_progress(scan_id, 10, "Запуск Hadolint...")
@@ -186,9 +201,10 @@ def _run_dockerfile_scan(scan_id: str, dockerfile_content: str | None):
         if not dockerfile_content:
             raise RuntimeError("Dockerfile не надано")
         hadolint_result = HadolintScanner().run(dockerfile_content)
+        score = _calculate_dockerfile_score(hadolint_result.get("issues", []))
         _update_progress(scan_id, 85, "Збереження результатів...")
         _save_dockerfile_issues(scan_id, hadolint_result)
-        _update_status(scan_id, "completed")
+        _update_status(scan_id, "completed", score=score)
     except Exception as exc:
         _update_status(scan_id, "failed", error=str(exc))
         raise

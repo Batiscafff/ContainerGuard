@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api")
 
 
 class ScanCreateRequest(BaseModel):
-    image_name: str
+    image_name: str | None = None
     dockerfile_content: str | None = None
     scan_mode: str = "image"
 
