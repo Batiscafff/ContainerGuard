@@ -10,10 +10,16 @@
 <body>
   <nav class="navbar">
     <a class="brand" href="/">ContainerGuard</a>
+    {% if request.session.get("user_id") %}
     <div class="nav-links">
       <a href="/">Сканування</a>
       <a href="/history">Історія</a>
+      <a href="/profile">Профіль</a>
+      <form method="post" action="/logout" style="display:inline;">
+        <button type="submit" class="nav-logout">Вийти</button>
+      </form>
     </div>
+    {% endif %}
   </nav>
 
   <main class="container">

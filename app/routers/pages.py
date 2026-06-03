@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.dependencies import require_session
 from app.models.scan import Scan
 from app.services.scan_service import create_scan
 
@@ -13,7 +14,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request):
+async def index(request: Request, _: str = Depends(require_session)):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
@@ -24,6 +25,7 @@ async def start_scan(
     image_name: str = Form(default=""),
     dockerfile_content: str = Form(default=""),
     db: AsyncSession = Depends(get_db),
+    _: str = Depends(require_session),
 ):
     mode = scan_mode if scan_mode in ("image", "dockerfile") else "image"
     content = dockerfile_content.strip() or None
@@ -42,7 +44,12 @@ async def start_scan(
 
 
 @router.get("/results/{scan_id}", response_class=HTMLResponse)
-async def results(request: Request, scan_id: str, db: AsyncSession = Depends(get_db)):
+async def results(
+    request: Request,
+    scan_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(require_session),
+):
     scan = await db.get(Scan, scan_id)
     if not scan:
         return HTMLResponse("Scan not found", status_code=404)
@@ -50,7 +57,11 @@ async def results(request: Request, scan_id: str, db: AsyncSession = Depends(get
 
 
 @router.get("/history", response_class=HTMLResponse)
-async def history(request: Request, db: AsyncSession = Depends(get_db)):
+async def history(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(require_session),
+):
     result = await db.execute(
         select(Scan).order_by(Scan.created_at.desc()).limit(50)
     )

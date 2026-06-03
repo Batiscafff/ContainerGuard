@@ -3,13 +3,14 @@ import io
 import json
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.dependencies import require_auth
 from app.models.dockerfile_issue import DockerfileIssue
 from app.models.sbom import SbomComponent
 from app.models.scan import Scan
@@ -19,7 +20,7 @@ from app.schemas.scan import ScanStatus, ScanSummary, VulnSummary
 from app.schemas.vulnerability import DockerfileIssueOut, SbomComponentOut, SecretOut, VulnerabilityOut
 from app.services.scan_service import create_scan
 
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 
 
 class ScanCreateRequest(BaseModel):

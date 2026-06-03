@@ -5,13 +5,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.dependencies import require_session
 from app.models.dockerfile_issue import DockerfileIssue
 from app.models.sbom import SbomComponent
 from app.models.scan import Scan
 from app.models.secret import Secret
 from app.models.vulnerability import Vulnerability
 
-router = APIRouter(prefix="/hx")
+router = APIRouter(prefix="/hx", dependencies=[Depends(require_session)])
 templates = Jinja2Templates(directory="app/templates")
 
 

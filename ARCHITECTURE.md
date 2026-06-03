@@ -11,15 +11,16 @@
 2. [Структура проєкту](#2-структура-проєкту)
 3. [Компоненти системи](#3-компоненти-системи)
 4. [База даних](#4-база-даних)
-5. [API](#5-api)
-6. [Сканери](#6-сканери)
-7. [Черга задач (Celery + Redis)](#7-черга-задач-celery--redis)
-8. [Frontend (Jinja2 + htmx)](#8-frontend-jinja2--htmx)
-9. [Docker Compose](#9-docker-compose)
-10. [Потік даних](#10-потік-даних)
-11. [Алгоритми оцінювання](#11-алгоритми-оцінювання)
-12. [Змінні середовища](#12-змінні-середовища)
-13. [Відомі обмеження безпеки](#13-відомі-обмеження-безпеки)
+5. [Автентифікація та авторизація](#5-автентифікація-та-авторизація)
+6. [API](#6-api)
+7. [Сканери](#7-сканери)
+8. [Черга задач (Celery + Redis)](#8-черга-задач-celery--redis)
+9. [Frontend (Jinja2 + htmx)](#9-frontend-jinja2--htmx)
+10. [Docker Compose](#10-docker-compose)
+11. [Потік даних](#11-потік-даних)
+12. [Алгоритми оцінювання](#12-алгоритми-оцінювання)
+13. [Змінні середовища](#13-змінні-середовища)
+14. [Відомі обмеження безпеки](#14-відомі-обмеження-безпеки)
 
 ---
 
@@ -94,13 +95,17 @@ ContainerGuard/
 │   │   ├── vulnerability.py    # Vulnerability
 │   │   ├── sbom.py             # SbomComponent
 │   │   ├── dockerfile_issue.py # DockerfileIssue
-│   │   └── secret.py           # Secret (TruffleHog)
+│   │   ├── secret.py           # Secret (TruffleHog)
+│   │   └── user.py             # User (email, hashed_password, api_key)
 │   │
 │   ├── schemas/
 │   │   ├── scan.py             # ScanStatus (включає progress, stage, scan_mode)
 │   │   └── vulnerability.py
 │   │
+│   ├── dependencies.py         # require_session(), require_auth()
+│   │
 │   ├── routers/
+│   │   ├── auth.py             # GET/POST /login, POST /logout, GET/POST /profile
 │   │   ├── pages.py            # HTML-сторінки (GET /, POST /scan, GET /results, /history)
 │   │   ├── api.py              # JSON API (POST /api/scan, GET /api/scan/{id}/*)
 │   │   └── hx.py               # HTML-фрагменти для htmx (/hx/scan/{id}/*)
@@ -111,6 +116,8 @@ ContainerGuard/
 │   │
 │   ├── templates/
 │   │   ├── base.html
+│   │   ├── login.html          # сторінка входу
+│   │   ├── profile.html        # профіль + API-ключ
 │   │   ├── index.html          # перемикач режимів Образ / Dockerfile
 │   │   ├── results.html        # умовний рендер під scan_mode
 │   │   ├── history.html
@@ -147,7 +154,8 @@ ContainerGuard/
 │       ├── 0002_add_secrets.py       # таблиця secrets
 │       ├── 0003_add_secret_raw_value.py
 │       ├── 0004_add_scan_progress.py # колонки progress, stage
-│       └── 0005_add_scan_mode.py     # колонка scan_mode
+│       ├── 0005_add_scan_mode.py     # колонка scan_mode
+│       └── 0006_add_users.py         # таблиця users
 │
 └── requirements.txt
 ```
@@ -223,6 +231,14 @@ error_message  TEXT         NULL
          raw_redacted  VARCHAR  (замаскований вигляд для відображення)
          raw_value     TEXT     (повне значення, тільки для БД і модального вікна)
          file_path, layer, line, decoder_name
+
+users
+─────────────────────────────────────────────────────
+id              VARCHAR(36)  PK
+email           VARCHAR(255) UNIQUE NOT NULL
+hashed_password VARCHAR(255) NOT NULL  (bcrypt)
+api_key         VARCHAR(64)  UNIQUE NOT NULL
+created_at      TIMESTAMP    DEFAULT now()
 ```
 
 ### ENUM-типи PostgreSQL
@@ -237,7 +253,72 @@ CREATE TYPE issue_severity AS ENUM ('error','warning','info');
 
 ---
 
-## 5. API
+## 5. Автентифікація та авторизація
+
+Система має одного адміністратора. Реалізовано два паралельних механізми захисту.
+
+### Ініціалізація адміна
+
+При першому старті `app` перевіряє таблицю `users` — якщо вона порожня, автоматично створює адміна:
+
+```python
+# app/main.py — lifespan
+password = secrets.token_urlsafe(16)   # генерується один раз
+user = User(
+    email=settings.admin_email,
+    hashed_password=pwd_context.hash(password),  # bcrypt
+    api_key=secrets.token_hex(32),
+)
+```
+
+Згенерований пароль виводиться в stdout (видно через `docker compose logs app`) і більше ніде не зберігається у відкритому вигляді.
+
+### Сесійна авторизація (веб-інтерфейс)
+
+Використовує `starlette.middleware.sessions.SessionMiddleware` — підписаний cookie на базі `itsdangerous`. Session зберігає `user_id` і `user_email`.
+
+```
+GET  /login  → форма входу
+POST /login  → перевірка bcrypt → set session cookie → redirect /
+POST /logout → session.clear() → redirect /login
+```
+
+Dependency `require_session(request)` перевіряє `request.session["user_id"]` і повертає `307 → /login` якщо сесії немає. Застосовується до всіх HTML-роутів (`pages.py`) та htmx-фрагментів (`hx.py`).
+
+### API-ключ (JSON API)
+
+Кожен користувач має персональний API-ключ (`api_key` у таблиці `users`). Ключ доступний на сторінці `/profile` і може бути перегенерований.
+
+Dependency `require_auth(request, x_api_key)` приймає **обидва** методи:
+
+```
+1. Session cookie  → браузер надсилає автоматично (htmx, результати сканування)
+2. X-API-Key header → зовнішні API-клієнти (curl, скрипти)
+```
+
+Якщо ні сесії, ні ключа — повертає `401 Authentication required`.
+
+```bash
+curl -X POST http://localhost:8000/api/scan \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <ключ зі сторінки /profile>" \
+  -d '{"image_name": "nginx:latest"}'
+```
+
+Застосовується до всього `/api/`-роутера через `APIRouter(dependencies=[Depends(require_auth)])`.
+
+### Таблиця захисту роутів
+
+| Роутер | Захист | Метод |
+|--------|--------|-------|
+| `pages.py` | `require_session` | Session cookie → redirect /login |
+| `hx.py` | `require_session` | Session cookie → 307 |
+| `api.py` | `require_auth` | Session cookie АБО X-API-Key → 401 |
+| `/login`, `/static/*` | Без захисту | — |
+
+---
+
+## 6. API
 
 ### POST /api/scan — запуск сканування
 
@@ -304,7 +385,7 @@ CREATE TYPE issue_severity AS ENUM ('error','warning','info');
 
 ---
 
-## 6. Сканери
+## 7. Сканери
 
 Всі наслідують `BaseScanner` (`worker/scanners/base.py`). Метод `_docker_run()` запускає `docker run --rm`. Trivy, Grype і TruffleHog потребують `mount_docker=True` (монтує `/var/run/docker.sock`) — вони самостійно завантажують образ.
 
@@ -320,7 +401,7 @@ TruffleHog виводить NDJSON (один JSON-об'єкт на рядок). 
 
 ---
 
-## 7. Черга задач (Celery + Redis)
+## 8. Черга задач (Celery + Redis)
 
 ### Задача `scan_image_task`
 
@@ -385,7 +466,7 @@ def scan_image_task(self, scan_id, image_name,
 
 ---
 
-## 8. Frontend (Jinja2 + htmx)
+## 9. Frontend (Jinja2 + htmx)
 
 ### Два режими на головній сторінці
 
@@ -421,7 +502,7 @@ document.body.addEventListener("htmx:afterRequest", function(evt) {
 
 ---
 
-## 9. Docker Compose
+## 10. Docker Compose
 
 ```yaml
 services:
@@ -435,7 +516,7 @@ services:
 
 ---
 
-## 10. Потік даних
+## 11. Потік даних
 
 ### Режим «Образ»
 
@@ -486,7 +567,7 @@ Browser:
 
 ---
 
-## 11. Алгоритми оцінювання
+## 12. Алгоритми оцінювання
 
 ### Security Score (режим «Образ»)
 
@@ -520,7 +601,7 @@ score = max(0, 100 - penalty)
 
 ---
 
-## 12. Змінні середовища
+## 13. Змінні середовища
 
 ```bash
 DATABASE_URL=postgresql+asyncpg://cguser:changeme@db:5432/containergard
@@ -534,7 +615,7 @@ APP_SECRET_KEY=change-this-secret
 
 ---
 
-## 13. Відомі обмеження безпеки
+## 14. Відомі обмеження безпеки
 
 ### Docker socket у контейнері воркера
 

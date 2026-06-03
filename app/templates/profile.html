@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Профіль — ContainerGuard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Профіль</h1>
+</div>
+
+<div class="card" style="max-width:640px;">
+  <h2 class="card-section-title">Обліковий запис</h2>
+  <p class="profile-email">{{ user.email }}</p>
+  <p class="text-muted" style="font-size:0.85rem;">
+    Зареєстровано: {{ user.created_at.strftime("%d.%m.%Y") }}
+  </p>
+</div>
+
+<div class="card" style="max-width:640px; margin-top:1rem;">
+  <h2 class="card-section-title">API-ключ</h2>
+  <p class="text-muted" style="font-size:0.875rem; margin-bottom:0.75rem;">
+    Використовуйте цей ключ для доступу до JSON API:
+    <code>X-API-Key: &lt;ключ&gt;</code>
+  </p>
+
+  <div class="api-key-box">
+    <code id="api-key-value">{{ user.api_key }}</code>
+    <button class="btn-copy" onclick="copyKey()" title="Скопіювати">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="9" y="9" width="13" height="13" rx="2"/>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+      </svg>
+    </button>
+  </div>
+
+  <details class="api-example">
+    <summary>Приклад використання</summary>
+    <pre><code>curl -X POST http://localhost:8000/api/scan \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: {{ user.api_key }}" \
+  -d '{"image_name": "nginx:latest"}'</code></pre>
+  </details>
+
+  <form method="post" action="/profile/regenerate-key"
+        onsubmit="return confirm('Старий ключ перестане працювати. Продовжити?')">
+    <button type="submit" class="btn btn-danger" style="margin-top:1rem;">
+      Перегенерувати ключ
+    </button>
+  </form>
+</div>
+
+<script>
+function copyKey() {
+  const key = document.getElementById("api-key-value").textContent;
+  navigator.clipboard.writeText(key).then(() => {
+    const btn = document.querySelector(".btn-copy");
+    btn.classList.add("copied");
+    setTimeout(() => btn.classList.remove("copied"), 1500);
+  });
+}
+</script>
+{% endblock %}

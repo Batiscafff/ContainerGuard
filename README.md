@@ -65,8 +65,14 @@ docker compose up --build -d
 # 4. Застосувати міграції БД
 docker compose exec app alembic upgrade head
 
-# 5. Відкрити застосунок
-open http://localhost:8000
+# 5. Перезапустити app (щоб seed запустився після міграції)
+docker compose restart app
+
+# 6. Отримати згенерований пароль адміна
+docker compose logs app | grep -A5 "ContainerGuard"
+
+# 7. Відкрити застосунок і увійти
+open http://localhost:8000/login
 ```
 
 ### Зупинка
@@ -80,9 +86,26 @@ docker compose down -v       # зупинити + видалити дані БД
 
 ## Використання
 
+### Вхід
+
+При першому старті система генерує пароль адміна і виводить його в логи:
+
+```
+====================================================
+  ContainerGuard — обліковий запис адміна
+  Email:    admin@example.com
+  Пароль:   xK9mP2qR_jLnFvBw
+  Збережіть ці дані — пароль більше не з'явиться
+====================================================
+```
+
+Email адміна задається через `ADMIN_EMAIL` у `.env` (за замовчуванням `admin@example.com`).
+
+На сторінці **Профіль** (`/profile`) доступний API-ключ для роботи з JSON API.
+
 ### Веб-інтерфейс
 
-1. Перейти на головну сторінку `http://localhost:8000`
+1. Перейти на `http://localhost:8000/login` і увійти
 2. Вибрати режим: **Образ** або **Dockerfile**
 
 **Режим «Образ»:**
@@ -220,22 +243,33 @@ ContainerGuard/
 | GET | `/api/scan/{id}/vulnerabilities/csv` | Вразливості як CSV |
 | DELETE | `/api/scan/{id}` | Видалити скан (→ 204) |
 
+#### Автентифікація API
+
+Всі `/api/*` ендпоінти захищені. Передайте API-ключ зі сторінки `/profile`:
+
+```bash
+-H "X-API-Key: <ваш-ключ>"
+```
+
 #### POST /api/scan — приклади
 
 ```bash
 # Сканування образу
 curl -X POST http://localhost:8000/api/scan \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: <ваш-ключ>" \
   -d '{"image_name": "nginx:latest"}'
 
 # Образ + Dockerfile
 curl -X POST http://localhost:8000/api/scan \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: <ваш-ключ>" \
   -d '{"image_name": "nginx:latest", "dockerfile_content": "FROM nginx:latest\nEXPOSE 80"}'
 
 # Тільки Dockerfile
 curl -X POST http://localhost:8000/api/scan \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: <ваш-ключ>" \
   -d '{"scan_mode": "dockerfile", "dockerfile_content": "FROM ubuntu:22.04\nRUN apt-get update"}'
 ```
 
