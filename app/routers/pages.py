@@ -20,12 +20,24 @@ async def index(request: Request):
 @router.post("/scan")
 async def start_scan(
     request: Request,
-    image_name: str = Form(...),
+    scan_mode: str = Form(default="image"),
+    image_name: str = Form(default=""),
     dockerfile_content: str = Form(default=""),
     db: AsyncSession = Depends(get_db),
 ):
+    mode = scan_mode if scan_mode in ("image", "dockerfile") else "image"
     content = dockerfile_content.strip() or None
-    scan = await create_scan(db, image_name.strip(), content)
+
+    if mode == "dockerfile":
+        if not content:
+            return HTMLResponse("Dockerfile не може бути порожнім", status_code=400)
+        display_name = "Dockerfile"
+    else:
+        display_name = image_name.strip()
+        if not display_name:
+            return HTMLResponse("Назва образу не може бути порожньою", status_code=400)
+
+    scan = await create_scan(db, display_name, content, scan_mode=mode)
     return RedirectResponse(url=f"/results/{scan.id}", status_code=303)
 
 

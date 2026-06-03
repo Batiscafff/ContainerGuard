@@ -8,21 +8,34 @@
 </div>
 
 <div class="card scan-form-card">
+  <!-- Mode switcher -->
+  <div class="mode-switcher">
+    <button type="button" class="mode-btn active" onclick="setMode('image')">
+      Образ
+    </button>
+    <button type="button" class="mode-btn" onclick="setMode('dockerfile')">
+      Dockerfile
+    </button>
+  </div>
+
   <form action="/scan" method="post">
-    <div class="form-group">
+    <input type="hidden" id="scan_mode" name="scan_mode" value="image">
+
+    <div class="form-group" id="image-group">
       <label for="image_name">Docker образ</label>
       <input
         type="text"
         id="image_name"
         name="image_name"
         placeholder="nginx:latest"
-        required
         class="input"
       />
     </div>
 
     <div class="form-group">
-      <label for="dockerfile_content">Dockerfile <span class="optional">(необов'язково)</span></label>
+      <label for="dockerfile_content" id="dockerfile-label">
+        Dockerfile <span class="optional" id="dockerfile-optional">(необов'язково)</span>
+      </label>
       <textarea
         id="dockerfile_content"
         name="dockerfile_content"
@@ -32,17 +45,17 @@
       ></textarea>
     </div>
 
-    <button type="submit" class="btn btn-primary btn-lg">Сканувати</button>
+    <button type="submit" class="btn btn-primary btn-lg" id="submit-btn">Сканувати</button>
   </form>
 </div>
 
 <div class="features">
-  <div class="feature">
+  <div class="feature" id="feat-cve">
     <div class="feature-icon">CVE</div>
     <h3>Trivy + Grype</h3>
     <p>Пошук вразливостей з двох незалежних джерел і дедупликацією</p>
   </div>
-  <div class="feature">
+  <div class="feature" id="feat-sbom">
     <div class="feature-icon">SBOM</div>
     <h3>Syft</h3>
     <p>Software Bill of Materials у форматі CycloneDX</p>
@@ -52,5 +65,47 @@
     <h3>Hadolint</h3>
     <p>Статичний аналіз Dockerfile за best practices</p>
   </div>
+  <div class="feature" id="feat-secrets">
+    <div class="feature-icon">🔑</div>
+    <h3>TruffleHog</h3>
+    <p>Пошук витоку секретів у шарах образу</p>
+  </div>
 </div>
+
+<script>
+  function setMode(mode) {
+    document.getElementById('scan_mode').value = mode;
+
+    const imageGroup  = document.getElementById('image-group');
+    const imageInput  = document.getElementById('image_name');
+    const dfTextarea  = document.getElementById('dockerfile_content');
+    const dfOptional  = document.getElementById('dockerfile-optional');
+    const submitBtn   = document.getElementById('submit-btn');
+    const featCve     = document.getElementById('feat-cve');
+    const featSbom    = document.getElementById('feat-sbom');
+    const featSecrets = document.getElementById('feat-secrets');
+
+    document.querySelectorAll('.mode-btn').forEach(function(b) {
+      b.classList.toggle('active', b.textContent.trim() === (mode === 'image' ? 'Образ' : 'Dockerfile'));
+    });
+
+    if (mode === 'image') {
+      imageGroup.style.display = '';
+      imageInput.required = true;
+      dfTextarea.required = false;
+      dfTextarea.placeholder = "FROM ubuntu:22.04\nRUN apt-get update...";
+      dfOptional.style.display = '';
+      submitBtn.textContent = 'Сканувати';
+      [featCve, featSbom, featSecrets].forEach(function(el) { el.style.opacity = '1'; });
+    } else {
+      imageGroup.style.display = 'none';
+      imageInput.required = false;
+      dfTextarea.required = true;
+      dfTextarea.placeholder = "FROM ubuntu:22.04\nRUN apt-get update\nCOPY . /app\n...";
+      dfOptional.style.display = 'none';
+      submitBtn.textContent = 'Аналізувати Dockerfile';
+      [featCve, featSbom, featSecrets].forEach(function(el) { el.style.opacity = '0.3'; });
+    }
+  }
+</script>
 {% endblock %}

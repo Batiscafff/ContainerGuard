@@ -22,7 +22,12 @@
     <tbody>
       {% for scan in scans %}
       <tr id="row-{{ scan.id }}">
-        <td class="mono">{{ scan.image_name }}</td>
+        <td class="mono">
+          {{ scan.image_name }}
+          {% if scan.scan_mode == "dockerfile" %}
+            <span class="mode-badge mode-badge-dockerfile" style="margin-left:0.4rem;">Dockerfile</span>
+          {% endif %}
+        </td>
         <td><span class="badge badge-{{ scan.status }}">{{ scan.status }}</span></td>
         <td>
           {% if scan.security_score is not none %}

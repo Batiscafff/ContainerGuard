@@ -7,13 +7,32 @@
     <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.3rem;">Результати сканування</div>
     <h2 class="image-name-heading">{{ scan.image_name }}</h2>
   </div>
-  <div style="display:flex;gap:0.5rem;flex-shrink:0;">
-    <button class="btn btn-danger btn-sm"
+  <div style="display:flex;gap:0.5rem;flex-shrink:0;align-items:center;">
+    {% if scan.status == "completed" %}
+    <div class="dropdown">
+      <button class="btn btn-outline">↓ Завантажити</button>
+      <div class="dropdown-menu">
+        <a class="dropdown-item" href="/api/scan/{{ scan.id }}/report">
+          <span style="opacity:.6;">{ }</span> JSON звіт (повний)
+        </a>
+        <a class="dropdown-item" href="/api/scan/{{ scan.id }}/vulnerabilities/csv">
+          <span style="opacity:.6;">≡</span> CSV — вразливості
+        </a>
+        <div class="dropdown-divider"></div>
+        <a class="dropdown-item" href="/api/scan/{{ scan.id }}/sbom/download">
+          <span style="opacity:.6;">↓</span> SBOM CycloneDX
+        </a>
+      </div>
+    </div>
+    {% endif %}
+    {% if scan.status not in ("pending", "running") %}
+    <button class="btn btn-danger"
             hx-delete="/api/scan/{{ scan.id }}"
             hx-confirm="Видалити цей скан?"
             hx-on::after-request="if(event.detail.successful) window.location='/history'">
       Видалити
     </button>
+    {% endif %}
     <a href="/history" class="btn btn-outline">← Історія</a>
   </div>
 </div>
@@ -46,11 +65,41 @@
      hx-trigger="every 3s"
      hx-swap="none">
   <div class="card status-card">
-    <div class="spinner"></div>
-    <p style="font-size:1rem;font-weight:500;margin-top:0.25rem;">
+    <p class="scan-status-title" id="status-title">
       {% if scan.status == "pending" %}Очікування в черзі...{% else %}Сканування виконується...{% endif %}
     </p>
-    <p class="hint" style="margin-top:0.5rem;">Trivy · Grype · Syft запущено паралельно</p>
+
+    <div class="progress-wrap">
+      <div class="progress-bar">
+        <div class="progress-fill" id="progress-fill"
+             style="width: {{ [scan.progress or 0, 5] | max }}%"></div>
+      </div>
+      <div class="progress-meta">
+        <span id="progress-stage">
+          {%- if scan.stage -%}
+            {{ scan.stage }}
+          {%- elif scan.status == "pending" -%}
+            Очікування в черзі...
+          {%- else -%}
+            Ініціалізація...
+          {%- endif -%}
+        </span>
+        <span id="progress-pct">{{ scan.progress or 0 }}%</span>
+      </div>
+    </div>
+
+    {% if scan.scan_mode == "dockerfile" %}
+    <div class="scanner-steps">
+      <span class="scanner-step" id="step-hadolint">Hadolint</span>
+    </div>
+    {% else %}
+    <div class="scanner-steps">
+      <span class="scanner-step" id="step-trivy">Trivy</span>
+      <span class="scanner-step" id="step-grype">Grype</span>
+      <span class="scanner-step" id="step-syft">Syft</span>
+      <span class="scanner-step" id="step-trufflehog">TruffleHog</span>
+    </div>
+    {% endif %}
   </div>
 </div>
 
@@ -65,6 +114,23 @@
 
 {% else %}
 <div id="results-root">
+
+{% if scan.scan_mode == "dockerfile" %}
+
+  <!-- Dockerfile-only results -->
+  <div class="card">
+    <div class="card-header">
+      <h3>Dockerfile Issues <span id="df-issues-count" class="count-badge"></span></h3>
+      <span class="mode-badge mode-badge-dockerfile">Dockerfile</span>
+    </div>
+    <div id="dockerfile-table"
+         hx-get="/hx/scan/{{ scan.id }}/dockerfile"
+         hx-trigger="load">
+      <div class="spinner"></div>
+    </div>
+  </div>
+
+{% else %}
 
   <!-- Security Score -->
   <div id="summary-block"
@@ -84,6 +150,9 @@
     </button>
     <button class="tab-btn" onclick="showTab('dockerfile', this)">
       Dockerfile Issues
+    </button>
+    <button class="tab-btn" onclick="showTab('secrets', this)">
+      Секрети
     </button>
     <button class="tab-btn"
             onclick="showTab('analytics', this)"
@@ -167,6 +236,21 @@
     </div>
   </div>
 
+  <!-- Secrets tab -->
+  <div id="tab-secrets" class="tab-panel">
+    <div class="card">
+      <div class="card-header">
+        <h3>Секрети <span id="secrets-count" class="count-badge"></span></h3>
+        <span style="font-size:0.78rem;color:var(--text-muted);">Виявлено TruffleHog — пошук витоку ключів, токенів, паролів у шарах образу</span>
+      </div>
+      <div id="secrets-table"
+           hx-get="/hx/scan/{{ scan.id }}/secrets"
+           hx-trigger="load">
+        <div class="spinner"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Analytics tab — loaded lazily on first click -->
   <div id="tab-analytics" class="tab-panel">
     <div id="charts-container">
@@ -176,21 +260,55 @@
     </div>
   </div>
 
+{% endif %}
+
 </div>
 {% endif %}
 
 <script src="/static/js/chart.umd.min.js"></script>
 <script>
-  /* polling — reload when scan completes */
+  /* polling — reload when scan completes, update progress bar otherwise */
+  const SCANNER_STEP_MAP = {
+    "trivy":       "step-trivy",
+    "grype":       "step-grype",
+    "syft":        "step-syft",
+    "trufflehog":  "step-trufflehog",
+  };
+
   document.body.addEventListener("htmx:afterRequest", function(evt) {
-    if (evt.detail.elt.id === "status-block") {
-      try {
-        const data = JSON.parse(evt.detail.xhr.responseText);
-        if (data.status === "completed" || data.status === "failed") {
-          window.location.reload();
-        }
-      } catch(e) {}
-    }
+    if (evt.detail.elt.id !== "status-block") return;
+    try {
+      const data = JSON.parse(evt.detail.xhr.responseText);
+      if (data.status === "completed" || data.status === "failed") {
+        window.location.reload();
+        return;
+      }
+
+      const fill    = document.getElementById("progress-fill");
+      const pctEl   = document.getElementById("progress-pct");
+      const stageEl = document.getElementById("progress-stage");
+      const titleEl = document.getElementById("status-title");
+      const pct     = data.progress || 0;
+
+      if (fill)    fill.style.width  = Math.max(pct, 5) + "%";
+      if (pctEl)   pctEl.textContent = pct + "%";
+      if (stageEl && data.stage) stageEl.textContent = data.stage;
+      if (titleEl && data.status === "running") titleEl.textContent = "Сканування виконується...";
+
+      {% if scan.scan_mode == "dockerfile" %}
+      /* dockerfile mode: mark Hadolint done when progress >= 85 */
+      const hadolintEl = document.getElementById("step-hadolint");
+      if (hadolintEl) hadolintEl.classList.toggle("done", pct >= 85);
+      {% else %}
+      /* image mode: mark scanner steps as done based on cumulative progress */
+      const SCANNER_ORDER = ["trivy", "grype", "syft", "trufflehog"];
+      const completedScanners = pct >= 10 ? Math.min(Math.floor((pct - 10) / 17), 4) : 0;
+      SCANNER_ORDER.forEach(function(key, idx) {
+        const el = document.getElementById(SCANNER_STEP_MAP[key]);
+        if (el) el.classList.toggle("done", idx < completedScanners);
+      });
+      {% endif %}
+    } catch(e) {}
   });
 
   /* update vuln count badge after table loads */
@@ -208,6 +326,20 @@
       const rows = evt.detail.elt.querySelectorAll("tbody tr").length;
       const badge = document.getElementById("sbom-count");
       if (badge && rows > 0) badge.textContent = rows;
+    }
+    if (evt.detail.elt.id === "secrets-table") {
+      const rows = evt.detail.elt.querySelectorAll("tbody tr").length;
+      const badge = document.getElementById("secrets-count");
+      if (badge && rows > 0) {
+        badge.textContent = rows;
+        badge.style.background = "rgba(239,68,68,.2)";
+        badge.style.color = "var(--critical)";
+      }
+    }
+    if (evt.detail.elt.id === "dockerfile-table") {
+      const rows = evt.detail.elt.querySelectorAll("tbody tr").length;
+      const badge = document.getElementById("df-issues-count");
+      if (badge) badge.textContent = rows > 0 ? rows : "";
     }
   });
 

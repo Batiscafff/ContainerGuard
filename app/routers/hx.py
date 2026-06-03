@@ -8,6 +8,7 @@ from app.database import get_db
 from app.models.dockerfile_issue import DockerfileIssue
 from app.models.sbom import SbomComponent
 from app.models.scan import Scan
+from app.models.secret import Secret
 from app.models.vulnerability import Vulnerability
 
 router = APIRouter(prefix="/hx")
@@ -77,6 +78,17 @@ async def hx_dockerfile(request: Request, scan_id: str, db: AsyncSession = Depen
     issues = result.scalars().all()
     return templates.TemplateResponse(
         "partials/dockerfile_table.html", {"request": request, "issues": issues}
+    )
+
+
+@router.get("/scan/{scan_id}/secrets", response_class=HTMLResponse)
+async def hx_secrets(request: Request, scan_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Secret).where(Secret.scan_id == scan_id).order_by(Secret.verified.desc())
+    )
+    secrets = result.scalars().all()
+    return templates.TemplateResponse(
+        "partials/secrets_table.html", {"request": request, "secrets": secrets}
     )
 
 

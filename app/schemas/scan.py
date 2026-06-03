@@ -15,6 +15,9 @@ class ScanStatus(BaseModel):
     created_at: datetime
     finished_at: datetime | None
     error_message: str | None
+    progress: int = 0
+    stage: str | None = None
+    scan_mode: str = "image"
 
     model_config = {"from_attributes": True}
 
