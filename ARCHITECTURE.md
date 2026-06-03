@@ -19,6 +19,7 @@
 10. [Потік даних](#10-потік-даних)
 11. [Алгоритми оцінювання](#11-алгоритми-оцінювання)
 12. [Змінні середовища](#12-змінні-середовища)
+13. [Відомі обмеження безпеки](#13-відомі-обмеження-безпеки)
 
 ---
 
@@ -530,3 +531,37 @@ CELERY_RESULT_BACKEND=redis://redis:6379/1
 DB_PASSWORD=changeme
 APP_SECRET_KEY=change-this-secret
 ```
+
+---
+
+## 13. Відомі обмеження безпеки
+
+### Docker socket у контейнері воркера
+
+`worker` монтує `/var/run/docker.sock` хост-системи, і передає цей socket у контейнери сканерів (Trivy, Grype, TruffleHog):
+
+```yaml
+# docker-compose.yml
+worker:
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+```
+
+```python
+# worker/scanners/base.py — прапор mount_docker=True
+cmd += ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
+```
+
+**Наслідок:** будь-який процес усередині `worker` або будь-якого сканера має root-еквівалентний доступ до хост-машини. Через socket можна запустити `docker run --privileged -v /:/host ...` і отримати повний контроль над файловою системою хоста.
+
+**Чому так реалізовано:** Trivy, Grype і TruffleHog потребують доступу до Docker daemon для завантаження та читання шарів образу — це штатний режим роботи цих інструментів.
+
+**Можливі пом'якшення (не реалізовані в поточній версії):**
+
+| Підхід | Опис |
+|--------|------|
+| `docker save` + tar-файл | Воркер зберігає образ як `.tar`, передає файл сканерам — socket потрібен тільки воркеру, не сканерам |
+| Registry-режим Trivy/Grype | `trivy image registry:image` та `grype registry:image` підключаються напряму до реєстру, без Docker daemon |
+| Socket-proxy | Tecnative docker-socket-proxy обмежує дозволені API-виклики білим списком |
+
+> Система призначена для роботи в ізольованому середовищі розробки або лабораторних умовах. Використання в production без усунення цього обмеження є неприйнятним.
